@@ -1,7 +1,7 @@
 {
   "version": 1,
   "window": {
-    "title": "Личное пространство",
+    "title": "Параметры проекта",
     "width": 760,
     "height": 560,
     "theme": "dark"
@@ -15,10 +15,10 @@
       "width": 660,
       "height": 28,
       "props": {
-        "text": "TKINTER++  /  ВАШ ИНТЕРФЕЙС",
-        "font_size": 10,
-        "weight": "normal",
-        "muted": true,
+        "text": "Параметры проекта",
+        "font_size": 14,
+        "weight": "bold",
+        "muted": false,
         "anchor": "w"
       }
     },
@@ -28,10 +28,10 @@
       "x": 40,
       "y": 70,
       "width": 660,
-      "height": 48,
+      "height": 36,
       "props": {
-        "text": "Меньше кода. Больше идей.",
-        "font_size": 26,
+        "text": "Общие настройки",
+        "font_size": 12,
         "weight": "bold",
         "muted": false,
         "anchor": "w"
@@ -45,7 +45,7 @@
       "width": 660,
       "height": 30,
       "props": {
-        "text": "Настройте пространство для следующего проекта.",
+        "text": "Конфигурация приложения",
         "font_size": 12,
         "weight": "normal",
         "muted": true,
@@ -84,7 +84,7 @@
       "width": 320,
       "height": 42,
       "props": {
-        "value": "Мой следующий проект"
+        "value": "Project1"
       }
     },
     {
@@ -150,7 +150,7 @@
       "width": 300,
       "height": 28,
       "props": {
-        "text": "Готовность к запуску",
+        "text": "Прогресс",
         "font_size": 12,
         "weight": "normal",
         "muted": true,
@@ -176,7 +176,7 @@
       "width": 210,
       "height": 44,
       "props": {
-        "text": "Создать проект",
+        "text": "Применить",
         "variant": "primary"
       }
     },
@@ -188,7 +188,7 @@
       "width": 160,
       "height": 44,
       "props": {
-        "text": "Позже",
+        "text": "Отмена",
         "variant": "secondary"
       }
     }

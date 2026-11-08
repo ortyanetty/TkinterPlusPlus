@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tkinterplusplus"
-version = "0.1.0"
+version = "0.2.0"
 description = "Modern Tkinter widgets and a visual Python UI builder"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -16,7 +16,10 @@ classifiers = [
 ]
 
 [project.scripts]
-tkinterplus-builder = "tkinterplus.builder:main"
+tkinterplus-builder = "tkinterplus.launcher:main"
+
+[project.optional-dependencies]
+editor = ["PyQt6>=6.7,<7"]
 
 [project.urls]
 Repository = "https://github.com/ortyanetty/TkinterPlusPlus"

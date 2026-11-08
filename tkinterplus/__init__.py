@@ -4,7 +4,7 @@ from .widgets import (
     Separator, Slider, Switch, Textbox,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __all__ = [
     "App", "Button", "CheckBox", "ComboBox", "Entry", "Frame", "Label",
     "ProgressBar", "Separator", "Slider", "Switch", "Textbox",

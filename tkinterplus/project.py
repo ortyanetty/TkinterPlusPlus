@@ -129,7 +129,7 @@ class WidgetModel:
 
 @dataclass
 class Project:
-    title: str = "Моё приложение"
+    title: str = "Form1"
     width: int = 800
     height: int = 560
     theme: str = "dark"
@@ -230,23 +230,23 @@ def create_widget(master, item):
 
 
 def demo_project():
-    p = Project(title="Личное пространство", width=760, height=560)
+    p = Project(title="Параметры проекта", width=760, height=560)
     def add(kind, x, y, width, height, **props):
         item = p.add(kind, x, y)
         item.width, item.height = width, height
         item.props.update(props)
-    add("Label", 40, 28, 660, 28, text="TKINTER++  /  ВАШ ИНТЕРФЕЙС", font_size=10, muted=True)
-    add("Label", 40, 70, 660, 48, text="Меньше кода. Больше идей.", font_size=26, weight="bold")
-    add("Label", 40, 126, 660, 30, text="Настройте пространство для следующего проекта.", muted=True)
+    add("Label", 40, 28, 660, 28, text="Параметры проекта", font_size=14, weight="bold")
+    add("Label", 40, 70, 660, 36, text="Общие настройки", font_size=12, weight="bold")
+    add("Label", 40, 126, 660, 30, text="Конфигурация приложения", muted=True)
     add("Separator", 40, 176, 680, 2)
     add("Label", 40, 200, 300, 28, text="Название проекта", weight="bold")
-    add("Entry", 40, 236, 320, 42, value="Мой следующий проект")
+    add("Entry", 40, 236, 320, 42, value="Project1")
     add("Label", 400, 200, 300, 28, text="Рабочая среда", weight="bold")
     add("ComboBox", 400, 236, 320, 42, options=["Разработка", "Дизайн", "Личный проект"], value="Разработка")
     add("Switch", 40, 305, 300, 36, text="Получать уведомления", value=True)
     add("CheckBox", 400, 305, 300, 36, text="Сохранять настройки", value=True)
-    add("Label", 40, 370, 300, 28, text="Готовность к запуску", muted=True)
+    add("Label", 40, 370, 300, 28, text="Прогресс", muted=True)
     add("ProgressBar", 40, 410, 680, 12, value=75)
-    add("Button", 40, 470, 210, 44, text="Создать проект")
-    add("Button", 270, 470, 160, 44, text="Позже", variant="secondary")
+    add("Button", 40, 470, 210, 44, text="Применить")
+    add("Button", 270, 470, 160, 44, text="Отмена", variant="secondary")
     return p

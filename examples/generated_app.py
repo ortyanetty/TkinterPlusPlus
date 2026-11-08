@@ -4,18 +4,18 @@ import tkinterplus as tpp
 
 
 def build_app():
-    app = tpp.App(title='Личное пространство', width=760,
+    app = tpp.App(title='Параметры проекта', width=760,
                   height=560, theme='dark')
     app.configure(background=app.colors.surface)
     app.resizable(False, False)
 
-    widget_label_1 = tpp.Label(app, text='TKINTER++  /  ВАШ ИНТЕРФЕЙС', font_size=10, weight='normal', muted=True, anchor='w')
+    widget_label_1 = tpp.Label(app, text='Параметры проекта', font_size=14, weight='bold', muted=False, anchor='w')
     widget_label_1.place(x=40, y=28, width=660, height=28)
 
-    widget_label_2 = tpp.Label(app, text='Меньше кода. Больше идей.', font_size=26, weight='bold', muted=False, anchor='w')
-    widget_label_2.place(x=40, y=70, width=660, height=48)
+    widget_label_2 = tpp.Label(app, text='Общие настройки', font_size=12, weight='bold', muted=False, anchor='w')
+    widget_label_2.place(x=40, y=70, width=660, height=36)
 
-    widget_label_3 = tpp.Label(app, text='Настройте пространство для следующего проекта.', font_size=12, weight='normal', muted=True, anchor='w')
+    widget_label_3 = tpp.Label(app, text='Конфигурация приложения', font_size=12, weight='normal', muted=True, anchor='w')
     widget_label_3.place(x=40, y=126, width=660, height=30)
 
     widget_separator_1 = tpp.Separator(app)
@@ -24,7 +24,7 @@ def build_app():
     widget_label_4 = tpp.Label(app, text='Название проекта', font_size=12, weight='bold', muted=False, anchor='w')
     widget_label_4.place(x=40, y=200, width=300, height=28)
 
-    widget_entry_1 = tpp.Entry(app, value='Мой следующий проект')
+    widget_entry_1 = tpp.Entry(app, value='Project1')
     widget_entry_1.place(x=40, y=236, width=320, height=42)
 
     widget_label_5 = tpp.Label(app, text='Рабочая среда', font_size=12, weight='bold', muted=False, anchor='w')
@@ -39,16 +39,16 @@ def build_app():
     widget_checkbox_1 = tpp.CheckBox(app, text='Сохранять настройки', value=True)
     widget_checkbox_1.place(x=400, y=305, width=300, height=36)
 
-    widget_label_6 = tpp.Label(app, text='Готовность к запуску', font_size=12, weight='normal', muted=True, anchor='w')
+    widget_label_6 = tpp.Label(app, text='Прогресс', font_size=12, weight='normal', muted=True, anchor='w')
     widget_label_6.place(x=40, y=370, width=300, height=28)
 
     widget_progressbar_1 = tpp.ProgressBar(app, value=75)
     widget_progressbar_1.place(x=40, y=410, width=680, height=12)
 
-    widget_button_1 = tpp.Button(app, text='Создать проект', variant='primary')
+    widget_button_1 = tpp.Button(app, text='Применить', variant='primary')
     widget_button_1.place(x=40, y=470, width=210, height=44)
 
-    widget_button_2 = tpp.Button(app, text='Позже', variant='secondary')
+    widget_button_2 = tpp.Button(app, text='Отмена', variant='secondary')
     widget_button_2.place(x=270, y=470, width=160, height=44)
 
     return app

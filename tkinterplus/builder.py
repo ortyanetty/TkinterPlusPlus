@@ -1,28 +1,62 @@
-"""Visual Tkinter++ editor: drag, inspect, save JSON, export Python."""
+"""PyQt6 editor for Tkinter++ projects."""
 from copy import deepcopy
 from pathlib import Path
-import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+import os
+import re
+import sys
 
-from . import widgets as ui
+from PyQt6.QtCore import QProcess, QProcessEnvironment, QRectF, QSize, Qt
+from PyQt6.QtGui import QAction, QActionGroup, QColor, QFont, QIcon, QKeySequence, QPainter, QSyntaxHighlighter, QTextCharFormat
+from PyQt6.QtWidgets import (
+    QApplication, QCheckBox, QComboBox, QDockWidget, QDoubleSpinBox, QFileDialog,
+    QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox,
+    QPlainTextEdit, QPushButton, QSpinBox, QStyle, QTabWidget, QToolBar,
+    QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+)
 from .codegen import generate_python
-from .project import MAX_WIDGETS, Project, ProjectError, SPECS, WidgetModel, create_widget, demo_project
-from .theme import FONT
-
+from .designer import Artboard, DesignItem, DesignScene, DesignView, PaletteList
+from .project import MAX_WIDGETS, Project, ProjectError, SPECS, WidgetModel, demo_project
+from .qt_theme import COLORS, apply_theme
 
 PROPERTY_LABELS = {
-    "text": "Текст", "value": "Значение", "options": "Варианты (по одному в строке)",
+    "text": "Текст", "value": "Значение", "options": "Варианты",
     "font_size": "Размер шрифта", "weight": "Начертание", "muted": "Приглушённый цвет",
     "anchor": "Выравнивание", "variant": "Оформление",
 }
 
 
-class Builder(ui.App):
+class PythonHighlighter(QSyntaxHighlighter):
+    theme = "dark"
+
+    def highlightBlock(self, text):
+        rules = [
+            (r"\b(?:import|from|as|def|return|if|else|True|False|None)\b", "#569cd6"),
+            (r"\b\d+(?:\.\d+)?\b", "#b5cea8"),
+            (r"\b(?:App|Button|Label|Entry|Frame|Textbox|CheckBox|Switch|ComboBox|Slider|ProgressBar|Separator)\b", "#4ec9b0"),
+            (r"""'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*" """.strip(), "#ce9178"),
+            (r"#.*$", "#6a9955"),
+        ]
+        for pattern, color in rules:
+            if self.theme == "light":
+                color = {"#569cd6": "#0000ff", "#b5cea8": "#098658", "#4ec9b0": "#267f99",
+                         "#ce9178": "#a31515", "#6a9955": "#008000"}[color]
+            formatting = QTextCharFormat()
+            formatting.setForeground(QColor(color))
+            for match in re.finditer(pattern, text):
+                # QTextDocument uses UTF-16 positions, including non-BMP text.
+                start = len(text[:match.start()].encode("utf-16-le"))//2
+                length = len(match.group().encode("utf-16-le"))//2
+                self.setFormat(start, length, formatting)
+
+
+class Builder(QMainWindow):
     def __init__(self):
-        super().__init__(title="Tkinter++ · Визуальный редактор", width=1440, height=900)
-        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
-        self.geometry(f"{min(1440, sw-60)}x{min(900, sh-60)}")
-        self.minsize(min(1100, sw-60), min(700, sh-100))
+        super().__init__()
+        self.setObjectName("TkinterPlusBuilder")
+        self.setDockNestingEnabled(True)
+        screen = QApplication.primaryScreen().availableGeometry()
+        self.resize(min(1440, screen.width()-40), min(920, screen.height()-60))
+        self.setMinimumSize(1000, 650)
         self.project = Project()
         self.path = None
         self.selected_id = None
@@ -30,17 +64,14 @@ class Builder(ui.App):
         self.future = []
         self.saved = self.project.dumps()
         self.views = {}
-        self.selection_parts = []
         self.previews = []
-        self._drag = None
-        self._palette_drag = None
-        self._refreshing_layers = False
-        self.snap = tk.BooleanVar(self, True)
-        self.status = tk.StringVar(self, "Начните с виджета слева или откройте пример.")
-        self._build_chrome()
-        self._bind_shortcuts()
-        self.protocol("WM_DELETE_WINDOW", self.close)
+        self.editor_theme = "dark"
+        self._build_actions()
+        self._build_ui()
+        self.set_editor_theme("dark")
         self._refresh()
+        self.default_layout = self.saveState()
+        self.statusBar().showMessage("Готово")
 
     @property
     def selected(self):
@@ -50,195 +81,380 @@ class Builder(ui.App):
     def dirty(self):
         return self.project.dumps() != self.saved
 
-    def _build_chrome(self):
-        top = ui.Frame(self)
-        top.pack(fill="x")
-        brand = ui.Frame(top)
-        brand.pack(side="left", padx=22, pady=16)
-        logo = tk.Canvas(brand, width=38, height=38, highlightthickness=0,
-                         background=self.colors.surface)
-        logo.pack(side="left", padx=(0, 12))
-        logo.create_rectangle(2, 2, 36, 36, fill=self.colors.accent, outline="")
-        logo.create_text(19, 19, text="++", fill="white", font=(FONT, 16, "bold"))
-        self.logo = logo
-        ui.Label(brand, "Tkinter++", font_size=19, weight="bold").pack(side="left")
-        ui.Label(brand, "ВИЗУАЛЬНЫЙ РЕДАКТОР", font_size=9, muted=True).pack(side="left", padx=20)
-        self.theme_button = self._button(top, "Светлая тема", self.toggle_theme, 140, "secondary")
-        self.theme_button.pack(side="right", padx=(8, 22), pady=16)
-        self._button(top, "▶  Предпросмотр", self.preview, 160, "secondary").pack(side="right", padx=4)
-        self._button(top, "Экспорт Python", self.export_python, 160).pack(side="right", padx=4)
-        toolbar = ui.Frame(self, variant="panel")
-        toolbar.pack(fill="x", pady=(1, 0))
-        for text, command, width in [
-            ("Новый", self.new_project, 78), ("Открыть", self.open_project, 90),
-            ("Сохранить", self.save_project, 105), ("Пример", self.open_demo, 85),
-        ]:
-            self._button(toolbar, text, command, width, "secondary").pack(side="left", padx=(10, 0), pady=8)
-        self._button(toolbar, "Код", self.show_code, 65, "secondary").pack(side="right", padx=10)
-        self.redo_button = self._button(toolbar, "Повторить", self.redo, 100, "secondary")
-        self.redo_button.pack(side="right", padx=4)
-        self.undo_button = self._button(toolbar, "Отменить", self.undo, 100, "secondary")
-        self.undo_button.pack(side="right", padx=4)
-        footer = ui.Frame(self)
-        footer.pack(side="bottom", fill="x", pady=(1, 0))
-        ui.Label(footer, textvariable=self.status, font_size=9, muted=True).pack(side="left", padx=18, pady=8)
-        ui.Label(footer, "Python + Tk  ·  v0.1", font_size=9, muted=True).pack(side="right", padx=18)
-        body = ui.Frame(self, variant="background")
-        body.pack(fill="both", expand=True)
-        left = ui.Frame(body, width=218)
-        left.pack(side="left", fill="y", padx=(0, 1))
-        left.pack_propagate(False)
-        self._build_palette(left)
-        self.inspector = ui.Frame(body, width=282)
-        self.inspector.pack(side="right", fill="y", padx=(1, 0))
-        self.inspector.pack_propagate(False)
-        center = ui.Frame(body, variant="background")
-        center.pack(fill="both", expand=True)
-        heading = ui.Frame(center, variant="background")
-        heading.pack(fill="x", padx=22, pady=(16, 10))
-        ui.Label(heading, "РАБОЧАЯ ОБЛАСТЬ", font_size=9, weight="bold", muted=True).pack(side="left")
-        self.size_label = ui.Label(heading, "", font_size=9, muted=True)
-        self.size_label.pack(side="right")
-        grid_check = ui.CheckBox(heading, text="Сетка 8 px", variable=self.snap)
-        grid_check.pack(side="right", padx=12)
-        hint = ui.Label(center, "Перетащите виджет из палитры. Выделите элемент, чтобы изменить его свойства.",
-                        font_size=9, muted=True)
-        hint.pack(anchor="w", padx=22, pady=(0, 12))
-        viewport = ui.Frame(center, variant="background")
-        viewport.pack(fill="both", expand=True, padx=16, pady=(0, 16))
-        self.canvas = tk.Canvas(viewport, background=self.colors.background, highlightthickness=0)
-        vs = ttk.Scrollbar(viewport, orient="vertical", command=self.canvas.yview,
-                           style="TPlus.Vertical.TScrollbar")
-        hs = ttk.Scrollbar(viewport, orient="horizontal", command=self.canvas.xview,
-                           style="TPlus.Horizontal.TScrollbar")
-        self.canvas.configure(xscrollcommand=hs.set, yscrollcommand=vs.set)
-        vs.pack(side="right", fill="y")
-        hs.pack(side="bottom", fill="x")
-        self.canvas.pack(fill="both", expand=True)
-        self.artboard = ui.Frame(self.canvas, highlightthickness=1,
-                                 highlightbackground=self.colors.border)
-        self.artboard_window = self.canvas.create_window(24, 24, anchor="nw", window=self.artboard)
-        self.artboard.bind("<Button-1>", lambda event: self.select(None))
-        self.artboard.bind("<MouseWheel>", self._scroll)
-        self.canvas.bind("<MouseWheel>", self._scroll)
-        self.canvas.bind("<Button-1>", lambda event: self.select(None))
+    def _action(self, text, callback, shortcut=None, icon=None):
+        action = QAction(text, self)
+        action.triggered.connect(lambda checked=False: callback())
+        if shortcut:
+            action.setShortcut(QKeySequence(shortcut))
+        if icon is not None:
+            action.setIcon(self.style().standardIcon(icon))
+            if icon == QStyle.StandardPixmap.SP_MediaPlay:
+                pixmap = action.icon().pixmap(16, 16)
+                painter = QPainter(pixmap)
+                painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+                painter.fillRect(pixmap.rect(), QColor("#6a9955"))
+                painter.end()
+                action.setIcon(QIcon(pixmap))
+        return action
 
-    def _button(self, parent, text, command, width=120, variant="primary"):
-        button = ui.Button(parent, text=text, command=command, variant=variant)
-        button.configure(width=width, height=34)
-        return button
+    def _build_actions(self):
+        sp = QStyle.StandardPixmap
+        self.new_action = self._action("Создать", self.new_project, "Ctrl+N", sp.SP_FileIcon)
+        self.open_action = self._action("Открыть…", self.open_project, "Ctrl+O", sp.SP_DirOpenIcon)
+        self.save_action = self._action("Сохранить", self.save_project, "Ctrl+S", sp.SP_DialogSaveButton)
+        self.save_as_action = self._action("Сохранить как…", self.save_as, "Ctrl+Shift+S")
+        self.export_action = self._action("Экспорт Python…", self.export_python, "Ctrl+E", sp.SP_FileDialogDetailedView)
+        self.undo_action = self._action("Отменить", self.undo, "Ctrl+Z", sp.SP_ArrowBack)
+        self.redo_action = self._action("Повторить", self.redo, "Ctrl+Y", sp.SP_ArrowForward)
+        self.redo_action.setShortcuts([QKeySequence("Ctrl+Y"), QKeySequence("Ctrl+Shift+Z")])
+        self.duplicate_action = self._action("Дублировать", self.duplicate, "Ctrl+D")
+        self.delete_action = self._action("Удалить", self.delete_selected, "Delete")
+        self.preview_action = self._action("Предпросмотр", self.preview, "F5", sp.SP_MediaPlay)
+        self.snap_action = QAction("Сетка 8 px", self, checkable=True, checked=True)
+        self.snap_action.toggled.connect(lambda checked: self.scene.update())
+        file_menu = self.menuBar().addMenu("Файл")
+        file_menu.addActions([self.new_action, self.open_action, self.save_action, self.save_as_action])
+        file_menu.addSeparator()
+        file_menu.addAction(self.export_action)
+        file_menu.addSeparator()
+        file_menu.addAction(self._action("Выход", self.close, "Alt+F4"))
+        edit = self.menuBar().addMenu("Правка")
+        edit.addActions([self.undo_action, self.redo_action])
+        edit.addSeparator()
+        edit.addActions([self.duplicate_action, self.delete_action])
+        edit.addAction(self._action("На слой выше", lambda: self.reorder(1)))
+        edit.addAction(self._action("На слой ниже", lambda: self.reorder(-1)))
+        self.view_menu = self.menuBar().addMenu("Вид")
+        self.view_menu.addAction(self.snap_action)
+        themes = self.view_menu.addMenu("Тема редактора")
+        self.theme_group = QActionGroup(self)
+        self.theme_actions = {}
+        for key, label in [("dark", "Тёмная"), ("light", "Светлая")]:
+            action = QAction(label, self, checkable=True)
+            action.triggered.connect(lambda checked, name=key: self.set_editor_theme(name))
+            self.theme_group.addAction(action)
+            themes.addAction(action)
+            self.theme_actions[key] = action
+        self.view_menu.addSeparator()
+        project_menu = self.menuBar().addMenu("Проект")
+        project_menu.addAction(self._action("Параметры окна", lambda: self.select(None)))
+        project_menu.addAction(self._action("Открыть пример", self.open_demo))
+        project_menu.addSeparator()
+        project_menu.addAction(self.preview_action)
 
-    def _build_palette(self, parent):
-        ui.Label(parent, "ЭЛЕМЕНТЫ", font_size=9, weight="bold", muted=True).pack(anchor="w", padx=18, pady=(18, 3))
-        ui.Label(parent, "Нажмите или перетащите", font_size=9, muted=True).pack(anchor="w", padx=18, pady=(0, 12))
-        bottom = ui.Frame(parent, height=174)
-        bottom.pack(side="bottom", fill="x")
-        bottom.pack_propagate(False)
-        ui.Separator(bottom).pack(fill="x", padx=18, pady=(8, 12))
-        ui.Label(bottom, "СЛОИ", font_size=9, weight="bold", muted=True).pack(anchor="w", padx=18, pady=(0, 8))
-        actions = ui.Frame(bottom)
-        actions.pack(side="bottom", fill="x", padx=14, pady=(4, 12))
-        self._button(actions, "Выше", lambda: self.reorder(1), 86, "secondary").pack(side="left")
-        self._button(actions, "Ниже", lambda: self.reorder(-1), 86, "secondary").pack(side="right")
-        self.layers = tk.Listbox(bottom, height=4, borderwidth=0, highlightthickness=0,
-                                 font=(FONT, 10), activestyle="none", exportselection=False)
-        self.layers.pack(fill="both", expand=True, padx=14)
-        self.layers.bind("<<ListboxSelect>>", self._layer_select)
-        palette_host = ui.Frame(parent)
-        palette_host.pack(fill="both", expand=True)
-        self.palette_canvas = tk.Canvas(palette_host, background=self.colors.surface, highlightthickness=0)
-        palette_scroll = ttk.Scrollbar(palette_host, orient="vertical", command=self.palette_canvas.yview,
-                                      style="TPlus.Vertical.TScrollbar")
-        palette_scroll.pack(side="right", fill="y")
-        self.palette_canvas.pack(fill="both", expand=True)
-        self.palette_canvas.configure(yscrollcommand=palette_scroll.set)
-        palette = ui.Frame(self.palette_canvas)
-        palette_window = self.palette_canvas.create_window(0, 0, anchor="nw", window=palette)
-        self.palette_canvas.bind("<Configure>", lambda e: self.palette_canvas.itemconfigure(palette_window, width=e.width))
-        palette.bind("<Configure>", lambda e: self.palette_canvas.configure(scrollregion=self.palette_canvas.bbox("all")))
-        def wheel(event):
-            self.palette_canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")
-            return "break"
-        self.palette_canvas.bind("<MouseWheel>", wheel)
-        symbols = ["Aa", "▣", "I_", "≡", "☑", "◉", "⌄", "↔", "━", "□", "—"]
-        for (kind, spec), symbol in zip(SPECS.items(), symbols):
-            button = self._button(palette, f"{symbol}   {spec.label}", None, 180, "secondary")
-            button.configure(height=32)
-            button.pack(fill="x", padx=(14, 4), pady=3)
-            button.bind("<ButtonPress-1>", lambda event, k=kind: self._palette_start(event, k))
-            button.bind("<B1-Motion>", self._palette_motion)
-            button.bind("<ButtonRelease-1>", self._palette_drop)
-            button.bind("<MouseWheel>", wheel)
+    def _build_ui(self):
+        toolbar = QToolBar("Стандартная", self)
+        toolbar.setObjectName("standardToolbar")
+        toolbar.setMovable(False)
+        toolbar.setIconSize(QSize(16, 16))
+        toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.addToolBar(toolbar)
+        toolbar.addActions([self.new_action, self.open_action, self.save_action])
+        toolbar.addSeparator()
+        toolbar.addActions([self.undo_action, self.redo_action])
+        toolbar.addSeparator()
+        toolbar.addActions([self.preview_action, self.export_action])
+        toolbar.addSeparator()
+        toolbar.addAction(self.snap_action)
+        self.document_label = QLabel("Без названия.json")
+        toolbar.addWidget(self.document_label)
+        self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
+        self.view = DesignView(self)
+        self.scene = DesignScene(self)
+        self.view.setScene(self.scene)
+        self.tabs.addTab(self.view, "Конструктор")
+        code_page = QWidget()
+        code_layout = QVBoxLayout(code_page)
+        code_layout.setContentsMargins(0, 0, 0, 0)
+        code_bar = QHBoxLayout()
+        code_bar.addWidget(QLabel("  Python / Tkinter++"))
+        code_bar.addStretch()
+        copy = QPushButton("Копировать")
+        copy.clicked.connect(self.copy_code)
+        code_bar.addWidget(copy)
+        code_layout.addLayout(code_bar)
+        self.code = QPlainTextEdit()
+        self.code.setObjectName("codeEditor")
+        self.code.setReadOnly(True)
+        self.code.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        self.code.setFont(QFont("Consolas", 10))
+        self.highlighter = PythonHighlighter(self.code.document())
+        code_layout.addWidget(self.code)
+        self.tabs.addTab(code_page, "Код")
+        self.setCentralWidget(self.tabs)
 
-    def _bind_shortcuts(self):
-        for sequence, callback in {
-            "<Control-n>": self.new_project, "<Control-o>": self.open_project,
-            "<Control-s>": self.save_project, "<Control-Shift-S>": self.save_as,
-            "<Control-e>": self.export_python, "<F5>": self.preview,
-        }.items():
-            self.bind(sequence, lambda event, fn=callback: (fn(), "break")[1])
-        for sequence, callback in {
-            "<Control-z>": self.undo, "<Control-y>": self.redo,
-            "<Control-Shift-Z>": self.redo, "<Control-d>": self.duplicate,
-            "<Delete>": self.delete_selected,
-        }.items():
-            self.bind(sequence, lambda event, fn=callback: self._editing_shortcut(event, fn))
-        for key, dx, dy in [("Left", -1, 0), ("Right", 1, 0), ("Up", 0, -1), ("Down", 0, 1)]:
-            self.bind(f"<{key}>", lambda event, x=dx, y=dy: self._nudge(event, x, y))
-        self.bind("<Escape>", lambda event: self.select(None))
+        toolbox = QWidget()
+        layout = QVBoxLayout(toolbox)
+        layout.setContentsMargins(5, 5, 5, 5)
+        self.palette_search = QLineEdit()
+        self.palette_search.setPlaceholderText("Поиск элементов")
+        self.palette_search.textChanged.connect(self._filter_palette)
+        layout.addWidget(self.palette_search)
+        self.palette = PaletteList()
+        self.palette.setDragEnabled(True)
+        for kind, spec in SPECS.items():
+            self.palette.addItem(f"{kind}  ·  {spec.label}")
+            item = self.palette.item(self.palette.count()-1)
+            item.setData(Qt.ItemDataRole.UserRole, kind)
+            item.setToolTip("Двойной щелчок — добавить; перетаскивание — разместить")
+        self.palette.itemDoubleClicked.connect(lambda item: self.add_widget(item.data(Qt.ItemDataRole.UserRole)))
+        layout.addWidget(self.palette)
+        self.toolbox_dock = self._dock("Панель элементов", "toolbox", toolbox, Qt.DockWidgetArea.LeftDockWidgetArea)
 
-    def _text_focus(self):
-        return isinstance(self.focus_get(), (tk.Entry, ttk.Entry, tk.Text, ttk.Combobox))
+        outline = QWidget()
+        outline_layout = QVBoxLayout(outline)
+        outline_layout.setContentsMargins(0, 0, 0, 0)
+        self.layers = QTreeWidget()
+        self.layers.setHeaderLabels(["Имя", "Тип"])
+        self.layers.setColumnWidth(0, 155)
+        self.layers.currentItemChanged.connect(self._layer_select)
+        outline_layout.addWidget(self.layers)
+        row = QHBoxLayout()
+        row.setContentsMargins(5, 0, 5, 5)
+        for text, direction in [("Выше", 1), ("Ниже", -1)]:
+            button = QPushButton(text)
+            button.clicked.connect(lambda checked=False, d=direction: self.reorder(d))
+            row.addWidget(button)
+        outline_layout.addLayout(row)
+        self.outline_dock = self._dock("Структура документа", "outline", outline, Qt.DockWidgetArea.LeftDockWidgetArea)
+        self.splitDockWidget(self.toolbox_dock, self.outline_dock, Qt.Orientation.Vertical)
 
-    def _editing_shortcut(self, event, callback):
-        if not self._text_focus():
-            callback()
-            return "break"
+        inspector = QWidget()
+        inspector_layout = QVBoxLayout(inspector)
+        inspector_layout.setContentsMargins(0, 0, 0, 0)
+        self.object_label = QLabel("Окно приложения")
+        self.object_label.setContentsMargins(8, 6, 8, 6)
+        inspector_layout.addWidget(self.object_label)
+        self.property_tree = QTreeWidget()
+        self.property_tree.setHeaderLabels(["Свойство", "Значение"])
+        self.property_tree.setIndentation(10)
+        self.property_tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.property_tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        inspector_layout.addWidget(self.property_tree)
+        self.apply_button = QPushButton("Применить")
+        self.apply_button.clicked.connect(self.apply_properties)
+        inspector_layout.addWidget(self.apply_button)
+        self.inspector_dock = self._dock("Свойства", "properties", inspector, Qt.DockWidgetArea.RightDockWidgetArea)
+        self.output = QPlainTextEdit()
+        self.output.setObjectName("outputLog")
+        self.output.setReadOnly(True)
+        self.output.setMaximumBlockCount(300)
+        self.output.setFont(QFont("Consolas", 9))
+        self.output_dock = self._dock("Вывод", "output", self.output, Qt.DockWidgetArea.BottomDockWidgetArea)
+        self.setCorner(Qt.Corner.BottomLeftCorner, Qt.DockWidgetArea.LeftDockWidgetArea)
+        self.setCorner(Qt.Corner.BottomRightCorner, Qt.DockWidgetArea.RightDockWidgetArea)
+        self.resizeDocks([self.toolbox_dock, self.inspector_dock], [255, 330], Qt.Orientation.Horizontal)
+        self.resizeDocks([self.toolbox_dock, self.outline_dock], [380, 230], Qt.Orientation.Vertical)
+        self.resizeDocks([self.output_dock], [110], Qt.Orientation.Vertical)
+        self.view_menu.addAction(self._action("Восстановить расположение панелей", self.restore_layout))
+        self.dimensions_label = QLabel()
+        self.statusBar().addPermanentWidget(self.dimensions_label)
 
-    def _nudge(self, event, dx, dy):
-        if self._text_focus() or not self.selected:
-            return
-        step = 8 if self.snap.get() else 1
+    def _dock(self, title, name, widget, area):
+        dock = QDockWidget(title, self)
+        dock.setObjectName(name)
+        dock.setWidget(widget)
+        self.addDockWidget(area, dock)
+        self.view_menu.addAction(dock.toggleViewAction())
+        return dock
+
+    def restore_layout(self):
+        self.restoreState(self.default_layout)
+
+    def _filter_palette(self, text):
+        for index in range(self.palette.count()):
+            item = self.palette.item(index)
+            item.setHidden(text.casefold() not in item.text().casefold())
+
+    def snap(self, value):
+        return round(value/8)*8 if self.snap_action.isChecked() else round(value)
+
+    def set_editor_theme(self, name):
+        self.editor_theme = name
+        apply_theme(self, name)
+        self.theme_actions[name].setChecked(True)
+        self.view.setBackgroundBrush(QColor(COLORS[name]["window"]))
+        self.highlighter.theme = name
+        self.highlighter.rehighlight()
+        self.scene.update()
+
+    def _refresh(self, rebuild_scene=True):
+        if rebuild_scene:
+            self._render_scene()
+        self._refresh_layers()
+        self._render_inspector()
+        self.code.setPlainText(generate_python(self.project))
+        self._update_title()
+        self.undo_action.setEnabled(bool(self.history))
+        self.redo_action.setEnabled(bool(self.future))
+        self.duplicate_action.setEnabled(self.selected is not None)
+        self.delete_action.setEnabled(self.selected is not None)
+
+    def _render_scene(self):
+        self.scene.clear()
+        self.views.clear()
+        self.scene.setSceneRect(QRectF(-28, -28, self.project.width+56, self.project.height+56))
+        self.scene.addItem(Artboard(self))
+        for index, item in enumerate(self.project.widgets):
+            view = DesignItem(self, item)
+            view.setZValue(index)
+            self.scene.addItem(view)
+            view.setSelected(item.id == self.selected_id)
+            self.views[item.id] = view
+
+    def select(self, item_id):
+        self.selected_id = item_id
+        for name, item in self.views.items():
+            item.setSelected(name == item_id)
+        self.layers.blockSignals(True)
+        self.layers.setCurrentItem(self.layer_items.get(item_id))
+        self.layers.blockSignals(False)
+        self._render_inspector()
+        self.duplicate_action.setEnabled(self.selected is not None)
+        self.delete_action.setEnabled(self.selected is not None)
+
+    def _refresh_layers(self):
+        self.layers.blockSignals(True)
+        self.layers.clear()
+        root = QTreeWidgetItem([self.project.title, "App"])
+        self.layers.addTopLevelItem(root)
+        root.setExpanded(True)
+        self.layer_items = {None: root}
+        selected = root
+        for item in reversed(self.project.widgets):
+            row = QTreeWidgetItem([item.id, item.kind])
+            row.setData(0, Qt.ItemDataRole.UserRole, item.id)
+            self.layer_items[item.id] = row
+            root.addChild(row)
+            if item.id == self.selected_id:
+                selected = row
+        self.layers.setCurrentItem(selected)
+        self.layers.blockSignals(False)
+
+    def _layer_select(self, current, previous):
+        if current is not None:
+            name = current.data(0, Qt.ItemDataRole.UserRole)
+            if name != self.selected_id:
+                self.select(name)
+
+    def _render_inspector(self):
+        self.property_tree.clear()
+        self.fields = {}
+        self.field_widgets = {}
         item = self.selected
-        before = self.project.to_dict()
-        item.x = max(0, min(item.x + dx*step, self.project.width-item.width))
-        item.y = max(0, min(item.y + dy*step, self.project.height-item.height))
-        self._commit(before)
-        return "break"
-
-    def _scroll(self, event):
-        self.canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")
-        return "break"
-
-    def _palette_start(self, event, kind):
-        self._palette_drag = (kind, event.x_root, event.y_root, False)
-        self.status.set(f"{SPECS[kind].label}: отпустите на рабочей области или нажмите для добавления.")
-        return "break"
-
-    def _palette_motion(self, event):
-        if self._palette_drag:
-            kind, x, y, moved = self._palette_drag
-            self._palette_drag = (kind, x, y, moved or abs(event.x_root-x)+abs(event.y_root-y) > 8)
-        return "break"
-
-    def _palette_drop(self, event):
-        if not self._palette_drag:
-            return "break"
-        kind, _, _, moved = self._palette_drag
-        self._palette_drag = None
-        x = event.x_root - self.artboard.winfo_rootx()
-        y = event.y_root - self.artboard.winfo_rooty()
-        if not moved:
-            offset = 32 + (len(self.project.widgets) % 10)*16
-            self.add_widget(kind, offset, offset)
-        elif 0 <= x < self.project.width and 0 <= y < self.project.height:
-            self.add_widget(kind, self._snap(x), self._snap(y))
+        self.object_label.setText(f"{item.id} : {item.kind}" if item else f"{self.project.title} : App")
+        common = self._property_group("Общие")
+        if item:
+            self._field(common, "id", "Имя", item.id)
+            geometry = self._property_group("Расположение")
+            for name, label in [("x", "X"), ("y", "Y"), ("width", "Ширина"), ("height", "Высота")]:
+                self._field(geometry, name, label, getattr(item, name))
+            content = self._property_group("Содержимое")
+            for name, value in item.props.items():
+                options = None
+                if name == "weight":
+                    options = ("normal", "bold")
+                elif name == "anchor":
+                    options = ("w", "center", "e")
+                elif name == "variant":
+                    options = ("primary", "secondary", "danger") if item.kind == "Button" else ("surface", "panel", "background")
+                self._field(content, "prop:"+name, PROPERTY_LABELS[name], value, options,
+                            multiline=name in ("text", "options") or (name == "value" and item.kind == "Textbox"))
         else:
-            self.status.set("Добавление отменено: отпустите виджет внутри окна приложения.")
-        return "break"
+            self._field(common, "title", "Заголовок", self.project.title)
+            self._field(common, "theme", "Тема окна", self.project.theme, ("dark", "light"))
+            geometry = self._property_group("Расположение")
+            self._field(geometry, "width", "Ширина", self.project.width)
+            self._field(geometry, "height", "Высота", self.project.height)
+        self.property_tree.expandAll()
 
-    def _snap(self, value):
-        return round(value/8)*8 if self.snap.get() else round(value)
+    def _property_group(self, label):
+        item = QTreeWidgetItem([label])
+        self.property_tree.addTopLevelItem(item)
+        item.setFirstColumnSpanned(True)
+        return item
+
+    def _field(self, group, key, label, value, options=None, multiline=False):
+        row = QTreeWidgetItem([label])
+        group.addChild(row)
+        if type(value) is bool:
+            widget = QCheckBox()
+            widget.setChecked(value)
+            getter = widget.isChecked
+        elif options:
+            widget = QComboBox()
+            widget.addItems(options)
+            widget.setCurrentText(value)
+            getter = widget.currentText
+        elif multiline:
+            widget = QPlainTextEdit("\n".join(value) if isinstance(value, list) else value)
+            widget.setFixedHeight(65)
+            widget.setTabChangesFocus(True)
+            getter = widget.toPlainText
+        elif type(value) in (int, float):
+            if key.startswith("prop:") and key != "prop:font_size":
+                widget = QDoubleSpinBox()
+                widget.setRange(0, 100)
+                widget.setDecimals(2)
+            else:
+                widget = QSpinBox()
+                widget.setRange(0, 4096)
+                if key == "prop:font_size":
+                    widget.setRange(8, 72)
+            widget.setValue(value)
+            getter = widget.value
+        else:
+            widget = QLineEdit(str(value))
+            widget.returnPressed.connect(self.apply_properties)
+            getter = widget.text
+        self.property_tree.setItemWidget(row, 1, widget)
+        self.fields[key] = getter
+        self.field_widgets[key] = widget
+
+    def update_geometry_fields(self):
+        if self.selected:
+            for name in ("x", "y", "width", "height"):
+                field = self.field_widgets.get(name)
+                if isinstance(field, QSpinBox):
+                    field.setValue(getattr(self.selected, name))
+
+    def apply_properties(self):
+        before = self.project.to_dict()
+        try:
+            data = self.project.to_dict()
+            if self.selected:
+                candidate = self.selected.to_dict()
+                for key, getter in self.fields.items():
+                    value = getter()
+                    if key.startswith("prop:"):
+                        name = key[5:]
+                        original = candidate["props"][name]
+                        if name == "options":
+                            value = value.splitlines()
+                        elif name == "font_size":
+                            value = int(value)
+                        elif type(original) is bool:
+                            value = bool(value)
+                        elif type(original) in (float, int):
+                            value = float(value)
+                        candidate["props"][name] = value
+                    else:
+                        candidate[key] = value.strip() if key == "id" else int(value)
+                node = WidgetModel.from_dict(candidate)
+                index = next(i for i, w in enumerate(self.project.widgets) if w.id == self.selected_id)
+                data["widgets"][index] = node.to_dict()
+                updated = Project.from_dict(data)
+                self.project, self.selected_id = updated, node.id
+            else:
+                data["window"].update(title=self.fields["title"](), width=int(self.fields["width"]()),
+                                      height=int(self.fields["height"]()), theme=self.fields["theme"]())
+                self.project = Project.from_dict(data)
+        except (ValueError, OverflowError) as error:
+            self._error(error if isinstance(error, ProjectError) else "Проверьте числовые значения свойств.")
+            return
+        self._commit(before)
+        self.statusBar().showMessage("Свойства применены")
 
     def add_widget(self, kind, x=32, y=32):
         before = self.project.to_dict()
@@ -249,270 +465,21 @@ class Builder(ui.App):
             return
         self.selected_id = item.id
         self._commit(before)
-        self.status.set(f"Добавлен {SPECS[kind].label.lower()} · {item.id}")
 
-    def _refresh(self):
-        self._render_artboard()
-        self._refresh_layers()
-        self._render_inspector()
-        self._update_title()
-
-    def _update_title(self):
-        name = self.path.name if self.path else "Без названия"
-        self.title(f"{'● ' if self.dirty else ''}{name} — Tkinter++")
-        self.size_label.configure(text=f"{self.project.width} × {self.project.height} px  ·  100%")
-
-    def _render_artboard(self):
-        for child in self.artboard.winfo_children():
-            child.destroy()
-        self.views.clear()
-        self.selection_parts.clear()
-        self.artboard.configure(width=self.project.width, height=self.project.height,
-                                background=self.colors.surface, highlightbackground=self.colors.border)
-        self.canvas.itemconfigure(self.artboard_window, width=self.project.width, height=self.project.height)
-        self.canvas.configure(scrollregion=(0, 0, self.project.width+48, self.project.height+48))
-        for item in self.project.widgets:
-            widget = create_widget(self.artboard, item)
-            self.views[item.id] = widget
-            self._bind_design_widget(widget, item.id)
-        if not self.project.widgets:
-            empty = ui.Label(self.artboard, "Ваш интерфейс начинается здесь", font_size=20, weight="bold", anchor="center")
-            empty.place(relx=.5, rely=.42, anchor="center", relwidth=.9, height=42)
-            hint = ui.Label(self.artboard, "Добавьте элемент слева или нажмите «Пример»", font_size=11, muted=True, anchor="center")
-            hint.place(relx=.5, rely=.51, anchor="center", relwidth=.9, height=32)
-            for label in (empty, hint):
-                label.bind("<Button-1>", lambda event: self.select(None))
-        self._draw_selection()
-
-    def _bind_design_widget(self, widget, item_id):
-        widget.bind("<ButtonPress-1>", lambda event, name=item_id: self._drag_start(event, name))
-        widget.bind("<B1-Motion>", self._drag_motion)
-        widget.bind("<ButtonRelease-1>", self._drag_end)
-        widget.bind("<Button-3>", lambda event, name=item_id: self._context_menu(event, name))
-        widget.bind("<Double-Button-1>", lambda event: "break")
-        widget.configure(takefocus=False)
-        for child in widget.winfo_children():
-            self._bind_design_widget(child, item_id)
-
-    def select(self, item_id):
-        self.selected_id = item_id
-        self._draw_selection()
-        self._refresh_layers()
-        self._render_inspector()
-
-    def _draw_selection(self):
-        for part in self.selection_parts:
-            part.destroy()
-        self.selection_parts.clear()
-        item = self.selected
-        if item is None:
-            return
-        x, y, w, h = item.x, item.y, item.width, item.height
-        for px, py, pw, ph in [(x, y, w, 2), (x, y+h-2, w, 2), (x, y, 2, h), (x+w-2, y, 2, h)]:
-            edge = tk.Frame(self.artboard, background=self.colors.accent, borderwidth=0)
-            edge.place(x=px, y=py, width=pw, height=ph)
-            self._bind_design_widget(edge, item.id)
-            self.selection_parts.append(edge)
-        handle = tk.Frame(self.artboard, background=self.colors.accent, cursor="sizing")
-        handle.place(x=x+w-9, y=y+h-9, width=9, height=9)
-        handle.bind("<ButtonPress-1>", lambda event: self._drag_start(event, item.id, resize=True))
-        handle.bind("<B1-Motion>", self._drag_motion)
-        handle.bind("<ButtonRelease-1>", self._drag_end)
-        self.selection_parts.append(handle)
-
-    def _drag_start(self, event, item_id, resize=False):
-        # Keep the event's widget alive while it owns the pointer grab.
-        if self.selected_id != item_id:
-            self.selected_id = item_id
-            self._draw_selection()
-            self._refresh_layers()
-            self._render_inspector()
-        item = self.selected
-        self.focus_set()
-        self._drag = {"x": event.x_root, "y": event.y_root, "before": self.project.to_dict(),
-                      "item": item.to_dict(), "resize": resize}
-        return "break"
-
-    def _drag_motion(self, event):
-        if not self._drag or not self.selected:
-            return "break"
-        drag, item = self._drag, self.selected
-        dx, dy = event.x_root-drag["x"], event.y_root-drag["y"]
-        original = drag["item"]
-        if drag["resize"]:
-            item.width = max(16, min(self._snap(original["width"]+dx), self.project.width-item.x))
-            item.height = max(2, min(self._snap(original["height"]+dy), self.project.height-item.y))
-        else:
-            item.x = max(0, min(self._snap(original["x"]+dx), self.project.width-item.width))
-            item.y = max(0, min(self._snap(original["y"]+dy), self.project.height-item.height))
-        self.views[item.id].place_configure(x=item.x, y=item.y, width=item.width, height=item.height)
-        # Reposition existing handles; destroying a grabbed handle cancels dragging on Windows.
-        x, y, w, h = item.x, item.y, item.width, item.height
-        positions = [(x, y, w, 2), (x, y+h-2, w, 2), (x, y, 2, h),
-                     (x+w-2, y, 2, h), (x+w-9, y+h-9, 9, 9)]
-        if not self.selection_parts:
-            self._draw_selection()
-        for part, (px, py, pw, ph) in zip(self.selection_parts, positions):
-            part.place_configure(x=px, y=py, width=pw, height=ph)
-        self.status.set(f"{item.id} · X {x}  Y {y}  ·  {w} × {h} px")
-        return "break"
-
-    def _drag_end(self, event):
-        if self._drag:
-            before = self._drag["before"]
-            self._drag = None
-            self._commit(before)
-        return "break"
-
-    def _refresh_layers(self):
-        self._refreshing_layers = True
-        self.layers.delete(0, "end")
-        for index, item in enumerate(reversed(self.project.widgets)):
-            self.layers.insert("end", f"  {item.id}  ·  {SPECS[item.kind].label}")
-            if item.id == self.selected_id:
-                self.layers.selection_set(index)
-                self.layers.see(index)
-        self._refreshing_layers = False
-
-    def _layer_select(self, event):
-        if not self._refreshing_layers and self.layers.curselection():
-            index = self.layers.curselection()[0]
-            name = list(reversed(self.project.widgets))[index].id
-            if name != self.selected_id:
-                self.select(name)
-
-    def _render_inspector(self):
-        for child in self.inspector.winfo_children():
-            child.destroy()
-        ui.Label(self.inspector, "СВОЙСТВА", font_size=9, weight="bold", muted=True).pack(anchor="w", padx=18, pady=(18, 10))
-        scroll_host = ui.Frame(self.inspector)
-        scroll_host.pack(fill="both", expand=True)
-        canvas = tk.Canvas(scroll_host, background=self.colors.surface, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(scroll_host, orient="vertical", command=canvas.yview,
-                                  style="TPlus.Vertical.TScrollbar")
-        scrollbar.pack(side="right", fill="y")
-        canvas.pack(fill="both", expand=True)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        form = ui.Frame(canvas)
-        window_id = canvas.create_window(0, 0, anchor="nw", window=form)
-        canvas.bind("<Configure>", lambda event: canvas.itemconfigure(window_id, width=event.width))
-        form.bind("<Configure>", lambda event: canvas.configure(scrollregion=canvas.bbox("all")))
-        def wheel(event):
-            canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")
-            return "break"
-        self.fields = {}
-        item = self.selected
-        ui.Label(form, SPECS[item.kind].label if item else "Окно приложения", font_size=16, weight="bold").pack(anchor="w", padx=18, pady=(0, 4))
-        ui.Label(form, item.id if item else "Выберите виджет для настройки", font_size=9, muted=True).pack(anchor="w", padx=18, pady=(0, 14))
-        if item:
-            self._field(form, "id", "Имя в проекте", item.id)
-            for name, label in [("x", "X, px"), ("y", "Y, px"), ("width", "Ширина, px"), ("height", "Высота, px")]:
-                self._field(form, name, label, getattr(item, name))
-            for name, value in item.props.items():
-                options = None
-                if name == "weight":
-                    options = ("normal", "bold")
-                elif name == "anchor":
-                    options = ("w", "center", "e")
-                elif name == "variant":
-                    options = ("primary", "secondary", "danger") if item.kind == "Button" else ("surface", "panel", "background")
-                self._field(form, "prop:"+name, PROPERTY_LABELS[name], value, options=options,
-                            multiline=name in ("text", "options") or (name == "value" and item.kind == "Textbox"))
-            self._button(form, "Применить", self.apply_properties, 220).pack(fill="x", padx=18, pady=(14, 8))
-            self._button(form, "Дублировать · Ctrl+D", self.duplicate, 220, "secondary").pack(fill="x", padx=18, pady=4)
-            self._button(form, "Удалить · Delete", self.delete_selected, 220, "danger").pack(fill="x", padx=18, pady=(4, 18))
-        else:
-            self._field(form, "title", "Заголовок окна", self.project.title)
-            self._field(form, "width", "Ширина окна, px", self.project.width)
-            self._field(form, "height", "Высота окна, px", self.project.height)
-            self._field(form, "theme", "Тема", self.project.theme, options=("dark", "light"))
-            self._button(form, "Применить", self.apply_properties, 220).pack(fill="x", padx=18, pady=16)
-            ui.Label(form, "Размер: 240–4096 × 200–4096 px.\n\nF5 — интерактивный просмотр\nCtrl+S — сохранить JSON\nCtrl+E — экспорт Python\n\nСтрелки — перемещение\nНижний правый угол — размер", font_size=9,
-                     muted=True, justify="left", wraplength=222).pack(anchor="w", padx=18, pady=10)
-        def bind_wheel(parent):
-            parent.bind("<MouseWheel>", wheel)
-            for child in parent.winfo_children():
-                bind_wheel(child)
-        bind_wheel(form)
-
-    def _field(self, parent, key, label, value, options=None, multiline=False):
-        ui.Label(parent, label, font_size=9, muted=True).pack(anchor="w", padx=18, pady=(7, 4))
-        if type(value) is bool:
-            variable = tk.BooleanVar(self, value=value)
-            field = ui.CheckBox(parent, text="Включено", variable=variable)
-            getter = variable.get
-        elif options:
-            field = ui.ComboBox(parent, options=options, value=value)
-            getter = field.get
-        elif multiline:
-            field = ui.Textbox(parent, value="\n".join(value) if isinstance(value, list) else str(value), height=3)
-            getter = field.get_value
-        else:
-            field = ui.Entry(parent, value=str(value))
-            getter = field.get
-        field.pack(fill="x", padx=18, pady=(0, 2))
-        if not multiline:
-            field.bind("<Return>", lambda event: self.apply_properties())
-        self.fields[key] = getter
-
-    def apply_properties(self):
-        before = self.project.to_dict()
-        try:
-            if self.selected:
-                candidate = self.selected.to_dict()
-                for key, getter in self.fields.items():
-                    value = getter()
-                    if key.startswith("prop:"):
-                        name = key[5:]
-                        original = candidate["props"][name]
-                        if type(original) is bool:
-                            value = bool(value)
-                        elif name == "options":
-                            value = value.splitlines()
-                        elif name == "font_size":
-                            value = int(value)
-                        elif type(original) in (float, int):
-                            value = float(value)
-                        candidate["props"][name] = value
-                    else:
-                        candidate[key] = value.strip() if key == "id" else int(value)
-                node = WidgetModel.from_dict(candidate)
-                data = self.project.to_dict()
-                index = next(i for i, w in enumerate(self.project.widgets) if w.id == self.selected_id)
-                data["widgets"][index] = node.to_dict()
-                updated = Project.from_dict(data)
-                self.project = updated
-                self.selected_id = node.id
-            else:
-                data = self.project.to_dict()
-                data["window"].update(title=self.fields["title"](), width=int(self.fields["width"]()),
-                                      height=int(self.fields["height"]()), theme=self.fields["theme"]())
-                self.project = Project.from_dict(data)
-                self.set_theme(self.project.theme)
-                self._style_chrome()
-        except (ValueError, OverflowError) as error:
-            self._error(error if isinstance(error, ProjectError) else "Проверьте числовые значения свойств.")
-            return
-        self._commit(before)
-        self.status.set("Свойства применены.")
-
-    def _commit(self, before):
+    def _commit(self, before, rebuild_scene=True):
         if before != self.project.to_dict():
             self.history.append(before)
             self.history = self.history[-100:]
             self.future.clear()
-        self._refresh()
+        self._refresh(rebuild_scene)
 
     def undo(self):
         if not self.history:
-            self.status.set("Нет действий для отмены.")
             return
         self.future.append(self.project.to_dict())
         self.project = Project.from_dict(self.history.pop())
         self.selected_id = None
-        self._sync_theme()
         self._refresh()
-        self.status.set("Действие отменено.")
 
     def redo(self):
         if not self.future:
@@ -520,13 +487,11 @@ class Builder(ui.App):
         self.history.append(self.project.to_dict())
         self.project = Project.from_dict(self.future.pop())
         self.selected_id = None
-        self._sync_theme()
         self._refresh()
-        self.status.set("Действие повторено.")
 
     def duplicate(self):
         item = self.selected
-        if not item:
+        if item is None:
             return
         if len(self.project.widgets) >= MAX_WIDGETS:
             self._error(f"Предел — {MAX_WIDGETS} виджетов.")
@@ -541,45 +506,45 @@ class Builder(ui.App):
         self._commit(before)
 
     def delete_selected(self):
-        if not self.selected:
+        if self.selected is None:
             return
         before = self.project.to_dict()
         self.project.widgets.remove(self.selected)
         self.selected_id = None
         self._commit(before)
 
-    def reorder(self, direction):
-        item = self.selected
-        if not item:
+    def nudge(self, dx, dy):
+        if self.selected is None:
             return
-        index = self.project.widgets.index(item)
-        new_index = max(0, min(index+direction, len(self.project.widgets)-1))
+        item = self.selected
         before = self.project.to_dict()
+        step = 8 if self.snap_action.isChecked() else 1
+        item.x = max(0, min(item.x+dx*step, self.project.width-item.width))
+        item.y = max(0, min(item.y+dy*step, self.project.height-item.height))
+        self._commit(before)
+
+    def reorder(self, direction):
+        if self.selected is None:
+            return
+        before = self.project.to_dict()
+        index = self.project.widgets.index(self.selected)
+        new_index = max(0, min(index+direction, len(self.project.widgets)-1))
         self.project.widgets.insert(new_index, self.project.widgets.pop(index))
         self._commit(before)
 
-    def _context_menu(self, event, item_id):
-        self.select(item_id)
-        menu = tk.Menu(self, tearoff=False)
-        menu.add_command(label="Дублировать", command=self.duplicate)
-        menu.add_command(label="На слой выше", command=lambda: self.reorder(1))
-        menu.add_command(label="На слой ниже", command=lambda: self.reorder(-1))
-        menu.add_separator()
-        menu.add_command(label="Удалить", command=self.delete_selected)
-        try:
-            menu.tk_popup(event.x_root, event.y_root)
-        finally:
-            menu.grab_release()
-            menu.destroy()
-        return "break"
+    def context_menu(self, position):
+        menu = QMenu(self)
+        menu.addActions([self.duplicate_action, self.delete_action])
+        menu.addSeparator()
+        menu.addAction("На слой выше", lambda: self.reorder(1))
+        menu.addAction("На слой ниже", lambda: self.reorder(-1))
+        menu.exec(position)
 
-    def _confirm_discard(self):
-        if not self.dirty:
-            return True
-        answer = messagebox.askyesnocancel("Несохранённые изменения", "Сохранить текущий проект?", parent=self)
-        if answer is None:
-            return False
-        return self.save_project() if answer else True
+    def _update_title(self):
+        name = self.path.name if self.path else "Без названия.json"
+        self.setWindowTitle(f"{name}{' *' if self.dirty else ''} — Tkinter++")
+        self.document_label.setText(f"  {name}")
+        self.dimensions_label.setText(f"{self.project.width} × {self.project.height}   |   {len(self.project.widgets)} элементов   |   Tkinter")
 
     def _replace_project(self, project, path=None, saved=True):
         self.project = project
@@ -588,25 +553,34 @@ class Builder(ui.App):
         self.history.clear()
         self.future.clear()
         self.saved = project.dumps() if saved else ""
-        self._sync_theme()
         self._refresh()
-        self.canvas.xview_moveto(0)
-        self.canvas.yview_moveto(0)
+        self.view.horizontalScrollBar().setValue(self.view.horizontalScrollBar().minimum())
+        self.view.verticalScrollBar().setValue(self.view.verticalScrollBar().minimum())
+
+    def _confirm_discard(self):
+        if not self.dirty:
+            return True
+        answer = QMessageBox.question(self, "Несохранённые изменения", "Сохранить текущий проект?",
+            QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Save)
+        if answer == QMessageBox.StandardButton.Cancel:
+            return False
+        return self.save_project() if answer == QMessageBox.StandardButton.Save else True
 
     def new_project(self):
         if self._confirm_discard():
-            self._replace_project(Project(theme=self.theme))
-            self.status.set("Новый проект.")
+            self._replace_project(Project())
+            self.log("Создан проект")
 
     def open_demo(self):
         if self._confirm_discard():
             self._replace_project(demo_project(), saved=False)
-            self.status.set("Демонстрационный проект: перемещайте элементы и меняйте свойства.")
+            self.log("Открыт пример формы")
 
     def open_project(self):
         if not self._confirm_discard():
             return
-        path = filedialog.askopenfilename(parent=self, title="Открыть проект Tkinter++", filetypes=[("Проект JSON", "*.json")])
+        path, _ = QFileDialog.getOpenFileName(self, "Открыть проект", "", "Проект Tkinter++ (*.json)")
         if not path:
             return
         try:
@@ -615,20 +589,19 @@ class Builder(ui.App):
             self._error(error)
             return
         self._replace_project(project, path)
-        self.status.set(f"Открыт {Path(path).name}")
+        self.log(f"Открыт: {path}")
 
     def save_project(self):
-        if self.path is None:
-            return self.save_as()
-        return self._save_to(self.path)
+        return self.save_as() if self.path is None else self._save_to(self.path)
 
     def save_as(self):
-        path = filedialog.asksaveasfilename(parent=self, title="Сохранить проект", defaultextension=".json",
-                                          initialfile=self.path.name if self.path else "project.json",
-                                          filetypes=[("Проект JSON", "*.json")])
+        path, _ = QFileDialog.getSaveFileName(self, "Сохранить проект", str(self.path or "project.json"), "Проект Tkinter++ (*.json)")
+        if path and not Path(path).suffix:
+            path += ".json"
         return self._save_to(Path(path)) if path else False
 
     def _save_to(self, path):
+        path = Path(path)
         try:
             self.project.save(path)
         except (OSError, ProjectError) as error:
@@ -637,92 +610,92 @@ class Builder(ui.App):
         self.path = path
         self.saved = self.project.dumps()
         self._update_title()
-        self.status.set(f"Сохранено: {path.name}")
+        self.log(f"Сохранено: {path}")
         return True
 
     def export_python(self):
-        path = filedialog.asksaveasfilename(parent=self, title="Экспорт Python", defaultextension=".py",
-                                          initialfile="app.py", filetypes=[("Python", "*.py")])
+        path, _ = QFileDialog.getSaveFileName(self, "Экспорт Python", "app.py", "Python (*.py)")
         if not path:
             return
+        if not Path(path).suffix:
+            path += ".py"
         try:
-            source = generate_python(self.project)
-            Path(path).write_text(source, encoding="utf-8")
+            Path(path).write_text(generate_python(self.project), encoding="utf-8")
         except (OSError, ProjectError) as error:
             self._error(error)
             return
-        self.status.set(f"Экспортирован {Path(path).name} · запуск: python {Path(path).name}")
+        self.log(f"Экспорт: {path}")
 
     def show_code(self):
-        window = tk.Toplevel(self)
-        window.title("Python-код · Tkinter++")
-        window.geometry("850x640")
-        window.configure(background=self.colors.surface)
-        bar = ui.Frame(window)
-        bar.pack(fill="x")
-        ui.Label(bar, "Код текущего проекта", font_size=13, weight="bold").pack(side="left", padx=18, pady=12)
-        code = generate_python(self.project)
-        self._button(bar, "Копировать", lambda: self._copy_code(code), 120, "secondary").pack(side="right", padx=12)
-        text = ui.Textbox(window, value=code, font=("Consolas", 11))
-        text.pack(fill="both", expand=True, padx=12, pady=(0, 12))
-        text.configure(state="disabled")
+        self.tabs.setCurrentIndex(1)
 
-    def _copy_code(self, code):
-        self.clipboard_clear()
-        self.clipboard_append(code)
-        self.status.set("Python-код скопирован.")
+    def copy_code(self):
+        QApplication.clipboard().setText(generate_python(self.project))
+        self.statusBar().showMessage("Код скопирован")
 
     def preview(self):
-        # A separate root has an independent theme and cannot change the editor.
-        preview = ui.App(title=f"Предпросмотр · {self.project.title}", width=self.project.width,
-                         height=self.project.height, theme=self.project.theme)
-        preview.resizable(False, False)
-        preview.configure(background=preview.colors.surface)
-        for item in self.project.widgets:
-            create_widget(preview, item)
-        preview.update_idletasks()
-        self.previews.append(preview)
-        self.status.set("Предпросмотр открыт. Поля и переключатели доступны для проверки.")
-        return preview
+        process = QProcess(self)
+        process.setProgram(sys.executable)
+        process.setArguments(["-m", "tkinterplus.preview"])
+        environment = QProcessEnvironment.systemEnvironment()
+        package_root = str(Path(__file__).resolve().parent.parent)
+        environment.insert("PYTHONPATH", package_root + os.pathsep + environment.value("PYTHONPATH", ""))
+        process.setProcessEnvironment(environment)
+        payload = self.project.dumps().encode("utf-8")
+        def started():
+            process.write(payload)
+            process.closeWriteChannel()
+            self.log("Предпросмотр запущен")
+        process.started.connect(started)
+        process.readyReadStandardError.connect(lambda: self.log(bytes(process.readAllStandardError()).decode("utf-8", errors="replace").strip()))
+        process.errorOccurred.connect(lambda error: self._preview_error(process, error))
+        process.finished.connect(lambda code, status: self._preview_finished(process, code))
+        self.previews.append(process)
+        process.start()
+        return process
 
-    def toggle_theme(self):
-        before = self.project.to_dict()
-        self.project.theme = "light" if self.project.theme == "dark" else "dark"
-        self._sync_theme()
-        self._commit(before)
+    def _preview_error(self, process, error):
+        self.log(f"Предпросмотр: {process.errorString()}")
+        if error == QProcess.ProcessError.FailedToStart:
+            if process in self.previews:
+                self.previews.remove(process)
+            process.deleteLater()
 
-    def _sync_theme(self):
-        self.set_theme(self.project.theme)
-        self._style_chrome()
+    def _preview_finished(self, process, code):
+        if process in self.previews:
+            self.previews.remove(process)
+        self.log(f"Предпросмотр завершён, код {code}")
+        process.deleteLater()
 
-    def _style_chrome(self):
-        p = self.colors
-        self.canvas.configure(background=p.background)
-        self.palette_canvas.configure(background=p.surface)
-        self.layers.configure(background=p.surface, foreground=p.text,
-                              selectbackground=p.selection, selectforeground=p.text)
-        self.logo.configure(background=p.surface)
-        self.theme_button.text = "Светлая тема" if self.theme == "dark" else "Тёмная тема"
-        self.theme_button._draw()
+    def log(self, message):
+        if message:
+            self.output.appendPlainText(message)
+            self.statusBar().showMessage(message.splitlines()[-1])
 
     def _error(self, error):
-        messagebox.showerror("Tkinter++", str(error), parent=self)
+        self.log(f"Ошибка: {error}")
+        QMessageBox.critical(self, "Tkinter++", str(error))
 
-    def close(self):
-        if self._confirm_discard():
-            for preview in self.previews:
-                try:
-                    preview.destroy()
-                except tk.TclError:
-                    pass
-            self.destroy()
+    def closeEvent(self, event):
+        if not self._confirm_discard():
+            event.ignore()
+            return
+        for process in list(self.previews):
+            process.terminate()
+            if not process.waitForFinished(1000):
+                process.kill()
+                process.waitForFinished(1000)
+        event.accept()
 
 
 def main():
-    app = Builder()
-    app._style_chrome()
-    app.mainloop()
+    application = QApplication.instance() or QApplication(sys.argv)
+    application.setApplicationName("Tkinter++")
+    application.setStyle("Fusion")
+    window = Builder()
+    window.show()
+    return application.exec()
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
