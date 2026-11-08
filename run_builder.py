@@ -6,6 +6,10 @@ import sys
 
 
 def main():
+    if sys.argv[1:2] == ["--preview"]:
+        from tkinterplus.preview import main as preview
+        preview(sys.argv[2:])
+        return 0
     if importlib.util.find_spec("PyQt6") is None:
         root = Path(__file__).resolve().parent
         executable = root / ".venv" / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")

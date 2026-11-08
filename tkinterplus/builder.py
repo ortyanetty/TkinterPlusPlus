@@ -5,7 +5,7 @@ import os
 import re
 import sys
 
-from PyQt6.QtCore import QProcess, QProcessEnvironment, QRectF, QSize, Qt
+from PyQt6.QtCore import QDir, QProcess, QProcessEnvironment, QRectF, QSize, QTemporaryFile, Qt
 from PyQt6.QtGui import QAction, QActionGroup, QColor, QFont, QIcon, QKeySequence, QPainter, QSyntaxHighlighter, QTextCharFormat
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDockWidget, QDoubleSpinBox, QFileDialog,
@@ -17,6 +17,7 @@ from .codegen import generate_python
 from .designer import Artboard, DesignItem, DesignScene, DesignView, PaletteList
 from .project import MAX_WIDGETS, Project, ProjectError, SPECS, WidgetModel, demo_project
 from .qt_theme import COLORS, apply_theme
+from . import __version__
 
 PROPERTY_LABELS = {
     "text": "Текст", "value": "Значение", "options": "Варианты",
@@ -141,6 +142,19 @@ class Builder(QMainWindow):
         project_menu.addAction(self._action("Открыть пример", self.open_demo))
         project_menu.addSeparator()
         project_menu.addAction(self.preview_action)
+        help_menu = self.menuBar().addMenu("Справка")
+        help_menu.addAction(self._action("О программе", self.about))
+
+    def about(self):
+        QMessageBox.about(self, "О программе", (
+            f"<b>Tkinter++ {__version__}</b><br>"
+            "Copyright (C) 2026 ortyanetty.<br>"
+            "Лицензия: GNU GPL версии 3.<br>"
+            "Программа предоставляется без гарантий.<br><br>"
+            '<a href="https://github.com/ortyanetty/TkinterPlusPlus">Исходный код и инструкции сборки</a><br>'
+            '<a href="https://github.com/ortyanetty/TkinterPlusPlus/blob/main/LICENSE">Полный текст GPLv3</a><br>'
+            '<a href="https://github.com/ortyanetty/TkinterPlusPlus/blob/main/THIRD_PARTY_NOTICES.md">Лицензии компонентов</a>'
+        ))
 
     def _build_ui(self):
         toolbar = QToolBar("Стандартная", self)
@@ -635,15 +649,26 @@ class Builder(QMainWindow):
 
     def preview(self):
         process = QProcess(self)
+        project_file = QTemporaryFile(QDir.tempPath() + "/tkinterplus-preview-XXXXXX.json", process)
+        payload = self.project.dumps().encode("utf-8")
+        if not project_file.open() or project_file.write(payload) != len(payload) or not project_file.flush():
+            self._error(f"Не удалось подготовить предпросмотр: {project_file.errorString()}")
+            project_file.remove()
+            process.deleteLater()
+            return None
+        project_path = project_file.fileName()
+        project_file.close()
+        process.project_file = project_file
         process.setProgram(sys.executable)
-        process.setArguments(["-m", "tkinterplus.preview"])
+        if getattr(sys, "frozen", False):
+            process.setArguments(["--preview", project_path])
+        else:
+            process.setArguments(["-m", "tkinterplus.preview", project_path])
         environment = QProcessEnvironment.systemEnvironment()
         package_root = str(Path(__file__).resolve().parent.parent)
         environment.insert("PYTHONPATH", package_root + os.pathsep + environment.value("PYTHONPATH", ""))
         process.setProcessEnvironment(environment)
-        payload = self.project.dumps().encode("utf-8")
         def started():
-            process.write(payload)
             process.closeWriteChannel()
             self.log("Предпросмотр запущен")
         process.started.connect(started)
@@ -657,11 +682,13 @@ class Builder(QMainWindow):
     def _preview_error(self, process, error):
         self.log(f"Предпросмотр: {process.errorString()}")
         if error == QProcess.ProcessError.FailedToStart:
+            process.project_file.remove()
             if process in self.previews:
                 self.previews.remove(process)
             process.deleteLater()
 
     def _preview_finished(self, process, code):
+        process.project_file.remove()
         if process in self.previews:
             self.previews.remove(process)
         self.log(f"Предпросмотр завершён, код {code}")

@@ -239,6 +239,8 @@ class BuilderTests(unittest.TestCase):
         app._replace_project(demo_project())
         before = app.project.to_dict()
         process = app.preview()
+        project_path = Path(process.project_file.fileName())
+        self.assertTrue(project_path.is_file())
         self.assertTrue(process.waitForStarted(5000))
         finished = QSignalSpy(process.finished)
         QTest.qWait(500)
@@ -247,6 +249,25 @@ class BuilderTests(unittest.TestCase):
         app.close()
         self.assertEqual(len(finished), 1)
         self.assertEqual(app.previews, [])
+        self.assertFalse(project_path.exists())
+
+    def test_frozen_preview_calls_bundled_worker_mode(self):
+        app = self.app
+        with patch("tkinterplus.builder.sys.frozen", True, create=True), patch.object(QProcess, "start"):
+            process = app.preview()
+        self.assertEqual(process.arguments()[0], "--preview")
+        self.assertEqual(Project.load(process.arguments()[1]), app.project)
+        process.project_file.remove()
+        app.previews.remove(process)
+        process.deleteLater()
+
+    def test_executable_entry_dispatches_preview_before_editor(self):
+        import run_builder
+        with patch("run_builder.sys.argv", ["program.exe", "--preview", "project.json"]), patch(
+            "tkinterplus.preview.main"
+        ) as preview:
+            self.assertEqual(run_builder.main(), 0)
+        preview.assert_called_once_with(["project.json"])
 
 
 if __name__ == "__main__":

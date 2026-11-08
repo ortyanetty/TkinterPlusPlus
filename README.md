@@ -11,6 +11,40 @@
 
 </details>
 
+## Windows: готовый EXE
+
+В [релизе v0.2.0](https://github.com/ortyanetty/TkinterPlusPlus/releases/tag/v0.2.0)
+доступен **TkinterPlusPlus-0.2.0-windows-x64.exe** — один переносимый файл для
+Windows x64. Скачайте его и запустите двойным щелчком. Отдельно устанавливать
+Python, PyQt6 и Tkinter для редактора и предпросмотра не требуется.
+
+Исходный код той же версии доступен в релизе как архив и в публичном репозитории.
+Программа распространяется под **GNU GPLv3**; полный текст — в [LICENSE](LICENSE),
+сведения о компонентах — в [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Рядом с EXE опубликован файл `SHA256SUMS.txt` с контрольными суммами.
+
+Экспортированные файлы `.py` запускаются отдельно и по-прежнему требуют Python
+с Tkinter и установленной библиотеки `tkinterplusplus`.
+
+### Сборка EXE из исходников
+
+```powershell
+python -m venv .venv
+.venv\Scripts\python -m pip install ".[editor,build]"
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_windows.ps1
+```
+
+Результат появится в `dist/`. Сборка выполняется на Windows x64. Спецификация
+PyInstaller и ресурс версии находятся в `packaging/`. Для повторения опубликованной
+сборки используется Python 3.14.8, PyQt6 / Qt 6.12.0, PyQt6-sip 13.13.0,
+PyInstaller 6.22.3, pyinstaller-hooks-contrib 2026.9; список зависимостей сборки
+включён в исходный архив как `packaging/build-requirements.txt`.
+Установить именно эти зависимости можно командой
+`.venv\Scripts\python -m pip install -r packaging/build-requirements.txt`.
+Проверка готового EXE: `.venv\Scripts\python tests/smoke_windows_exe.py`.
+Она запускает редактор без Python в `PATH`, проверяет F5 и отдельный режим
+Tkinter-предпросмотра, затем закрывает тестовые окна.
+
 ## Быстрый запуск
 
 Нужен **Python 3.10+**, **PyQt6** и графическая среда. Для предпросмотра и экспортируемых приложений нужен Tkinter; проверить его можно командой `python -m tkinter`. В Linux может понадобиться системный пакет `python3-tk`.

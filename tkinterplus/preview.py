@@ -14,9 +14,15 @@ def build_preview(project):
     return app
 
 
-def main():
-    data = sys.stdin.buffer.read(MAX_FILE_BYTES+1)
-    project = Project.loads(data.decode("utf-8"))
+def main(arguments=None):
+    arguments = sys.argv[1:] if arguments is None else arguments
+    if arguments:
+        if len(arguments) != 1:
+            raise ValueError("Expected one project JSON path")
+        project = Project.load(arguments[0])
+    else:
+        data = sys.stdin.buffer.read(MAX_FILE_BYTES+1)
+        project = Project.loads(data.decode("utf-8"))
     build_preview(project).mainloop()
 
 
