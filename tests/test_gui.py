@@ -60,6 +60,75 @@ class WidgetTests(unittest.TestCase):
         self.assertEqual(ui.Entry(self.app, value="Привет").get(), "Привет")
         self.assertEqual(ui.Textbox(self.app, value="two\nlines").get_value(), "two\nlines")
 
+    def test_custom_hex_rgb_colors_are_inherited_and_survive_theme_change(self):
+        self.app.set_colors(surface=(30, 40, 50), accent="#8844cc")
+        frame = ui.Frame(self.app, colors={"text": (200, 210, 220)})
+        label = ui.Label(frame, text="Inherited")
+        entry = ui.Entry(frame, colors={"surface": "#443322"})
+        checkbox = ui.CheckBox(frame, value=True, colors={"on_accent": "#aabbcc"})
+        for theme in ("light", "dark", "light"):
+            self.app.set_theme(theme)
+            self.app.update()
+            self.assertEqual(label.cget("foreground"), "#c8d2dc")
+            self.assertEqual(frame.cget("background"), "#1e2832")
+            self.assertEqual(self.app._theme.style.lookup(entry.cget("style"), "fieldbackground"), "#443322")
+            self.assertEqual(checkbox._kept_indicators[1].get(6, 10), (170, 187, 204))
+        entry.set_colors()
+        self.assertEqual(self.app._theme.style.lookup(entry.cget("style"), "fieldbackground"), "#1e2832")
+        with self.assertRaises(ValueError):
+            entry.set_colors(surface=(256, 0, 0))
+
+    def test_radio_group_and_disabled_switch(self):
+        first = ui.RadioButton(self.app, group="mode", value="first", selected=True)
+        second = ui.RadioButton(self.app, group="mode", value="second")
+        second.invoke()
+        self.assertEqual(first.get(), "second")
+        self.assertIs(first.variable, second.variable)
+        calls = []
+        switch = ui.Switch(self.app, value=False, command=calls.append, state="disabled")
+        switch._toggle()
+        self.assertFalse(switch.get())
+        switch.configure(state="normal")
+        switch._toggle()
+        self.assertEqual(calls, [True])
+
+    def test_custom_slider_remains_interactive_and_export_exposes_named_widgets(self):
+        slider = ui.Slider(self.app, value=50)
+        slider.place(x=20, y=20, width=240, height=36)
+        self.app.update()
+        slider.event_generate("<ButtonPress-1>", x=120, y=18)
+        slider.event_generate("<B1-Motion>", x=180, y=18)
+        slider.event_generate("<ButtonRelease-1>", x=180, y=18)
+        self.assertGreater(slider.get(), 60)
+        project = Project(colors={"accent": (60, 90, 120)})
+        item = project.add("Button")
+        item.props["colors"] = {"on_accent": "#123456"}
+        namespace = {"__name__": "export_test"}
+        exec(generate_python(project), namespace)
+        exported = namespace["build_app"]()
+        try:
+            self.assertEqual(exported.colors.accent, "#3c5a78")
+            self.assertEqual(exported.widgets[item.id].colors.on_accent, "#123456")
+        finally:
+            exported.destroy()
+
+    def test_documented_example_callbacks_work(self):
+        from examples.button import build_app as button_app
+        from examples.form import build_app as form_app
+        for factory in (button_app, form_app):
+            app = factory()
+            try:
+                app.update()
+                if "button" in app.widgets:
+                    app.widgets["button"].invoke()
+                    self.assertEqual(app.widgets["status"].cget("text"), "Кнопка нажата")
+                else:
+                    app.widgets["name"].insert(0, "Roman")
+                    app.widgets["save"].invoke()
+                    self.assertIn("Roman", app.widgets["status"].cget("text"))
+            finally:
+                app.destroy()
+
     def test_exported_application_runs_with_every_widget(self):
         p = Project(width=1000, height=800)
         for i, kind in enumerate(SPECS):

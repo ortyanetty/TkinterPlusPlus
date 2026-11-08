@@ -74,6 +74,120 @@ class BuilderTests(unittest.TestCase):
         self.assertEqual(len(app.views), len(SPECS))
         compile(generate_python(app.project), "export.py", "exec")
 
+    def test_multiple_selection_ctrl_click_drag_and_undo(self):
+        app = self.app
+        app.add_widget("Button", 32, 32)
+        first = app.selected_id
+        app.add_widget("Entry", 240, 120)
+        second = app.selected_id
+        app.select(first)
+        position = app.view.mapFromScene(QPointF(260, 135))
+        QTest.mouseClick(app.view.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.ControlModifier, position)
+        self.assertEqual(app.selected_ids, {first, second})
+        before = app.project.to_dict()
+        history = len(app.history)
+        position = app.view.mapFromScene(QPointF(50, 45))
+        QTest.mousePress(app.view.viewport(), Qt.MouseButton.LeftButton, pos=position)
+        QTest.mouseMove(app.view.viewport(), position+QPoint(40, 32), 10)
+        QTest.mouseRelease(app.view.viewport(), Qt.MouseButton.LeftButton, pos=position+QPoint(40, 32))
+        self.assertEqual([(item.x, item.y) for item in app.project.widgets], [(72, 64), (280, 152)])
+        self.assertEqual(len(app.history), history+1)
+        app.undo()
+        self.assertEqual(app.project.to_dict(), before)
+
+    def test_rubber_band_selects_multiple_widgets(self):
+        app = self.app
+        app.add_widget("Button", 32, 32)
+        app.add_widget("Entry", 240, 120)
+        app.select(None)
+        start = app.view.mapFromScene(QPointF(12, 12))
+        end = app.view.mapFromScene(QPointF(500, 205))
+        QTest.mousePress(app.view.viewport(), Qt.MouseButton.LeftButton, pos=start)
+        QTest.mouseMove(app.view.viewport(), end, 20)
+        QTest.mouseRelease(app.view.viewport(), Qt.MouseButton.LeftButton, pos=end)
+        self.assertEqual(len(app.selected_ids), 2)
+
+    def test_group_clipboard_delete_and_atomic_paste_rejection(self):
+        app = self.app
+        app.add_widget("Button", 40, 40)
+        app.add_widget("Entry", 240, 160)
+        app.select_all()
+        app.copy_widgets()
+        app.paste_widgets()
+        self.assertEqual(len(app.project.widgets), 4)
+        clones = app.selected_items
+        self.assertEqual((clones[1].x-clones[0].x, clones[1].y-clones[0].y), (200, 120))
+        self.assertEqual(len({item.id for item in app.project.widgets}), 4)
+        app.delete_selected()
+        self.assertEqual(len(app.project.widgets), 2)
+        app.undo()
+        self.assertEqual(len(app.project.widgets), 4)
+        app._replace_project(Project(width=240, height=200))
+        with patch.object(app, "_error") as error:
+            app.paste_widgets()
+        error.assert_called_once()
+        self.assertEqual(app.project.widgets, [])
+
+    def test_duplicate_radio_gets_a_distinct_default_value(self):
+        app = self.app
+        app.add_widget("RadioButton")
+        first = app.selected
+        first.props["selected"] = True
+        app.duplicate()
+        self.assertNotEqual(first.props["value"], app.selected.props["value"])
+        self.assertFalse(app.selected.props["selected"])
+        self.assertEqual(first.props["group"], app.selected.props["group"])
+
+    def test_arrange_alignment_distribution_and_equal_dimensions(self):
+        app = self.app
+        for x, y in [(32, 32), (280, 160), (600, 280)]:
+            app.add_widget("Button", x, y)
+        app.select_all()
+        app.arrange("horizontal")
+        items = app.project.widgets
+        self.assertEqual(items[1].x-items[0].x-items[0].width, items[2].x-items[1].x-items[1].width)
+        app.arrange("top")
+        self.assertEqual({item.y for item in items}, {32})
+        app.selected.width = 120
+        app.arrange("width")
+        self.assertEqual({item.width for item in items}, {120})
+        app.undo()
+        self.assertEqual([item.width for item in app.project.widgets], [120, 160, 160])
+
+    def test_hex_rgb_fields_export_and_invalid_input_is_atomic(self):
+        app = self.app
+        field = app.field_widgets["color:accent"]
+        field.edit.setText("#112233")
+        field.mode.setCurrentText("RGB")
+        self.assertEqual(field.edit.text(), "17, 34, 51")
+        field.edit.setText("124, 92, 224")
+        app.apply_properties()
+        self.assertEqual(app.project.colors["accent"], "#7c5ce0")
+        self.assertEqual(app.field_widgets["color:accent"].mode.currentText(), "RGB")
+        app.add_widget("Button")
+        field = app.field_widgets["color:on_accent"]
+        field.mode.setCurrentText("RGB")
+        field.edit.setText("2, 40, 70")
+        app.apply_properties()
+        self.assertEqual(app.selected.props["colors"]["on_accent"], "#022846")
+        self.assertIn("#022846", generate_python(app.project))
+        before = app.project.to_dict()
+        app.field_widgets["color:border"].edit.setText("#12")
+        with patch.object(app, "_error") as error:
+            app.apply_properties()
+        error.assert_called_once()
+        self.assertEqual(app.project.to_dict(), before)
+
+    def test_widget_copy_shortcut_does_not_replace_text_copy(self):
+        app = self.app
+        app.add_widget("Entry")
+        field = app.field_widgets["prop:value"]
+        field.setText("Обычный текст")
+        field.setFocus()
+        field.selectAll()
+        QTest.keyClick(field, Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier)
+        self.assertEqual(QApplication.clipboard().text(), "Обычный текст")
+
     def test_palette_double_click_and_search(self):
         app = self.app
         app.palette_search.setText("Button")
@@ -102,12 +216,13 @@ class BuilderTests(unittest.TestCase):
         self.assertEqual((app.project.widgets[0].x, app.project.widgets[0].y), (32, 32))
         app.select(app.project.widgets[0].id)
         node = app.selected
+        expected_height = app.snap(node.height+30)
         start = app.view.mapFromScene(QPointF(node.x+node.width-3, node.y+node.height-3))
         QTest.mousePress(app.view.viewport(), Qt.MouseButton.LeftButton, pos=start)
         QTest.mouseMove(app.view.viewport(), start+QPoint(40, 30), 10)
         QTest.mouseRelease(app.view.viewport(), Qt.MouseButton.LeftButton, pos=start+QPoint(40, 30))
         self.qt.processEvents()
-        self.assertEqual((app.selected.width, app.selected.height), (200, 72))
+        self.assertEqual((app.selected.width, app.selected.height), (200, expected_height))
 
     def test_drop_clamps_geometry_and_rejects_outside_canvas(self):
         app = self.app
@@ -125,6 +240,7 @@ class BuilderTests(unittest.TestCase):
         QTest.keyClick(app.view, Qt.Key.Key_Right)
         self.assertEqual(app.selected.x, 40)
         field = app.field_widgets["prop:value"]
+        field.setText("Текст для проверки Undo")
         field.setFocus()
         field.selectAll()
         QTest.keyClick(field, Qt.Key.Key_Delete)

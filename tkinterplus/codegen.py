@@ -9,15 +9,16 @@ def generate_python(project):
         "# Requires the tkinterplusplus package (import name: tkinterplus).",
         "import tkinterplus as tpp", "", "", "def build_app():",
         f"    app = tpp.App(title={project.title!r}, width={project.width},",
-        f"                  height={project.height}, theme={project.theme!r})",
-        "    app.configure(background=app.colors.surface)",
-        "    app.resizable(False, False)", "",
+        f"                  height={project.height}, theme={project.theme!r}, colors={project.colors!r})",
+        "    app.resizable(False, False)",
+        "    app.widgets = {}  # Access widgets by the names from the designer.", "",
     ]
     for item in project.widgets:
         variable = f"widget_{item.id}"
         args = ", ".join(f"{key}={value!r}" for key, value in item.props.items())
         lines.append(f"    {variable} = tpp.{item.kind}(app{', ' if args else ''}{args})")
         lines.append(f"    {variable}.place(x={item.x}, y={item.y}, width={item.width}, height={item.height})")
+        lines.append(f"    app.widgets[{item.id!r}] = {variable}")
         lines.append("")
     lines += ["    return app", "", "", 'if __name__ == "__main__":',
               "    build_app().mainloop()", ""]

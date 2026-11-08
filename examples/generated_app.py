@@ -5,51 +5,65 @@ import tkinterplus as tpp
 
 def build_app():
     app = tpp.App(title='Параметры проекта', width=760,
-                  height=560, theme='dark')
-    app.configure(background=app.colors.surface)
+                  height=560, theme='dark', colors={})
     app.resizable(False, False)
+    app.widgets = {}  # Access widgets by the names from the designer.
 
-    widget_label_1 = tpp.Label(app, text='Параметры проекта', font_size=14, weight='bold', muted=False, anchor='w')
+    widget_label_1 = tpp.Label(app, text='Параметры проекта', font_size=14, weight='bold', muted=False, anchor='w', colors={})
     widget_label_1.place(x=40, y=28, width=660, height=28)
+    app.widgets['label_1'] = widget_label_1
 
-    widget_label_2 = tpp.Label(app, text='Общие настройки', font_size=12, weight='bold', muted=False, anchor='w')
+    widget_label_2 = tpp.Label(app, text='Общие настройки', font_size=12, weight='bold', muted=False, anchor='w', colors={})
     widget_label_2.place(x=40, y=70, width=660, height=36)
+    app.widgets['label_2'] = widget_label_2
 
-    widget_label_3 = tpp.Label(app, text='Конфигурация приложения', font_size=12, weight='normal', muted=True, anchor='w')
+    widget_label_3 = tpp.Label(app, text='Конфигурация приложения', font_size=12, weight='normal', muted=True, anchor='w', colors={})
     widget_label_3.place(x=40, y=126, width=660, height=30)
+    app.widgets['label_3'] = widget_label_3
 
-    widget_separator_1 = tpp.Separator(app)
+    widget_separator_1 = tpp.Separator(app, colors={})
     widget_separator_1.place(x=40, y=176, width=680, height=2)
+    app.widgets['separator_1'] = widget_separator_1
 
-    widget_label_4 = tpp.Label(app, text='Название проекта', font_size=12, weight='bold', muted=False, anchor='w')
+    widget_label_4 = tpp.Label(app, text='Название проекта', font_size=12, weight='bold', muted=False, anchor='w', colors={})
     widget_label_4.place(x=40, y=200, width=300, height=28)
+    app.widgets['label_4'] = widget_label_4
 
-    widget_entry_1 = tpp.Entry(app, value='Project1')
+    widget_entry_1 = tpp.Entry(app, value='Project1', show='', state='normal', colors={})
     widget_entry_1.place(x=40, y=236, width=320, height=42)
+    app.widgets['entry_1'] = widget_entry_1
 
-    widget_label_5 = tpp.Label(app, text='Рабочая среда', font_size=12, weight='bold', muted=False, anchor='w')
+    widget_label_5 = tpp.Label(app, text='Рабочая среда', font_size=12, weight='bold', muted=False, anchor='w', colors={})
     widget_label_5.place(x=400, y=200, width=300, height=28)
+    app.widgets['label_5'] = widget_label_5
 
-    widget_combobox_1 = tpp.ComboBox(app, options=['Разработка', 'Дизайн', 'Личный проект'], value='Разработка')
+    widget_combobox_1 = tpp.ComboBox(app, options=['Разработка', 'Дизайн', 'Личный проект'], value='Разработка', state='readonly', colors={})
     widget_combobox_1.place(x=400, y=236, width=320, height=42)
+    app.widgets['combobox_1'] = widget_combobox_1
 
-    widget_switch_1 = tpp.Switch(app, text='Получать уведомления', value=True)
+    widget_switch_1 = tpp.Switch(app, text='Получать уведомления', value=True, state='normal', colors={})
     widget_switch_1.place(x=40, y=305, width=300, height=36)
+    app.widgets['switch_1'] = widget_switch_1
 
-    widget_checkbox_1 = tpp.CheckBox(app, text='Сохранять настройки', value=True)
+    widget_checkbox_1 = tpp.CheckBox(app, text='Сохранять настройки', value=True, state='normal', colors={})
     widget_checkbox_1.place(x=400, y=305, width=300, height=36)
+    app.widgets['checkbox_1'] = widget_checkbox_1
 
-    widget_label_6 = tpp.Label(app, text='Прогресс', font_size=12, weight='normal', muted=True, anchor='w')
+    widget_label_6 = tpp.Label(app, text='Прогресс', font_size=12, weight='normal', muted=True, anchor='w', colors={})
     widget_label_6.place(x=40, y=370, width=300, height=28)
+    app.widgets['label_6'] = widget_label_6
 
-    widget_progressbar_1 = tpp.ProgressBar(app, value=75)
+    widget_progressbar_1 = tpp.ProgressBar(app, value=75, colors={})
     widget_progressbar_1.place(x=40, y=410, width=680, height=12)
+    app.widgets['progressbar_1'] = widget_progressbar_1
 
-    widget_button_1 = tpp.Button(app, text='Применить', variant='primary')
+    widget_button_1 = tpp.Button(app, text='Применить', variant='primary', state='normal', font_size=10, radius=5, colors={})
     widget_button_1.place(x=40, y=470, width=210, height=44)
+    app.widgets['button_1'] = widget_button_1
 
-    widget_button_2 = tpp.Button(app, text='Отмена', variant='secondary')
+    widget_button_2 = tpp.Button(app, text='Отмена', variant='secondary', state='normal', font_size=10, radius=5, colors={})
     widget_button_2.place(x=270, y=470, width=160, height=44)
+    app.widgets['button_2'] = widget_button_2
 
     return app
 

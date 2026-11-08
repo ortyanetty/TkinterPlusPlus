@@ -6,11 +6,21 @@ import os
 import subprocess
 import time
 import json
+import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-EXE = ROOT / "dist" / "TkinterPlusPlus-0.2.0-windows-x64.exe"
+sys.path.insert(0, str(ROOT))
+from tkinterplus.project import Project, SPECS
+EXE = ROOT / "dist" / "TkinterPlusPlus-0.3.0-windows-x64.exe"
 RUN = ROOT / ".qa" / "standalone-run"
-RUN.mkdir(exist_ok=True)
+RUN.mkdir(exist_ok=True, parents=True)
+(ROOT / ".qa" / "temp").mkdir(exist_ok=True)
+custom = Project(title="HEX / RGB widgets", width=1000, height=800,
+                 colors={"accent": (124, 92, 224), "background": "#16181d"})
+for index, kind in enumerate(SPECS):
+    custom.add(kind, 32, 24+index*48).props["colors"] = {"border": "#64748b", "thumb": (220, 230, 240)}
+custom_path = RUN / "custom-colors.json"
+custom.save(custom_path)
 kernel = ctypes.WinDLL("kernel32", use_last_error=True)
 user = ctypes.WinDLL("user32", use_last_error=True)
 class PE(ctypes.Structure):
@@ -87,6 +97,8 @@ for name, arguments, expected in [
     ("editor", [], lambda item: "Tkinter++" in item[1] and item[2].startswith("Qt")),
     ("tk_preview", ["--preview", str(ROOT / "examples" / "starter.json")],
      lambda item: item[1] == "Параметры проекта" and item[2].startswith("Tk")),
+    ("all_widgets_preview", ["--preview", str(custom_path)],
+     lambda item: item[1] == "HEX / RGB widgets" and item[2].startswith("Tk")),
 ]:
     process = subprocess.Popen([str(EXE), *arguments], cwd=RUN, env=environment,
                                creationflags=subprocess.CREATE_NO_WINDOW)

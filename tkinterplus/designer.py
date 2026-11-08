@@ -4,7 +4,7 @@ from PyQt6.QtGui import QColor, QDrag, QFont, QPainter, QPen, QPolygonF
 from PyQt6.QtWidgets import QGraphicsItem, QGraphicsObject, QGraphicsRectItem, QGraphicsScene, QGraphicsView, QListWidget
 
 from .project import SPECS
-from .theme import PALETTES
+from .theme import palette
 
 MIME_WIDGET = "application/x-tkinterplus-widget"
 A = Qt.AlignmentFlag
@@ -31,8 +31,8 @@ class Artboard(QGraphicsRectItem):
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemUsesExtendedStyleOption)
 
     def paint(self, painter, option, widget=None):
-        p = PALETTES[self.editor.project.theme]
-        painter.fillRect(self.rect(), QColor(p.surface))
+        p = palette(self.editor.project.theme, self.editor.project.colors)
+        painter.fillRect(self.rect(), QColor(p.background))
         if self.editor.snap_action.isChecked():
             exposed = option.exposedRect.intersected(self.rect())
             points = QPolygonF([QPointF(x, y)
@@ -54,7 +54,7 @@ class DesignScene(QGraphicsScene):
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             hit = self.itemAt(event.scenePos(), self.editor.view.transform())
-            if not isinstance(hit, DesignItem):
+            if not isinstance(hit, DesignItem) and not event.modifiers() & Qt.KeyboardModifier.ControlModifier:
                 self.editor.select(None)
         super().mousePressEvent(event)
 
@@ -68,6 +68,7 @@ class DesignItem(QGraphicsObject):
         self.start = None
         self.original = None
         self.resizing = False
+        self.group_originals = {}
         self.setPos(model.x, model.y)
         self.setFlags(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable |
                       QGraphicsItem.GraphicsItemFlag.ItemIsFocusable)
@@ -90,11 +91,22 @@ class DesignItem(QGraphicsObject):
             event.ignore()
             return
         self.resizing = self.isSelected() and self.handle_rect().contains(event.pos())
-        self.editor.select(self.model.id)
+        control = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+        if control:
+            self.editor.select(self.model.id, additive=True, toggle=True)
+        elif self.model.id not in self.editor.selected_ids:
+            self.editor.select(self.model.id)
+        else:
+            self.editor.set_selection(self.editor.selected_ids, self.model.id)
+        if self.model.id not in self.editor.selected_ids:
+            event.accept()
+            return
+        self.resizing = self.resizing and len(self.editor.selected_ids) == 1
         self.setFocus()
         self.before = self.editor.project.to_dict()
         self.start = QPointF(event.scenePos())
         self.original = self.model.to_dict()
+        self.group_originals = {item.id: item.to_dict() for item in self.editor.selected_items}
         event.accept()
 
     def mouseMoveEvent(self, event):
@@ -110,9 +122,8 @@ class DesignItem(QGraphicsObject):
             m.width = max(16, min(self.editor.snap(original["width"]+dx), self.editor.project.width-m.x))
             m.height = max(2, min(self.editor.snap(original["height"]+dy), self.editor.project.height-m.y))
         else:
-            m.x = max(0, min(self.editor.snap(original["x"]+dx), self.editor.project.width-m.width))
-            m.y = max(0, min(self.editor.snap(original["y"]+dy), self.editor.project.height-m.height))
-            self.setPos(m.x, m.y)
+            self.editor.move_selection(self.editor.snap(original["x"]+dx)-original["x"],
+                                       self.editor.snap(original["y"]+dy)-original["y"], self.group_originals)
         self.update()
         self.editor.update_geometry_fields()
         self.editor.statusBar().showMessage(f"{m.id}   X: {m.x}  Y: {m.y}   {m.width} × {m.height} px")
@@ -126,16 +137,19 @@ class DesignItem(QGraphicsObject):
         event.accept()
 
     def contextMenuEvent(self, event):
-        self.editor.select(self.model.id)
+        if self.model.id not in self.editor.selected_ids:
+            self.editor.select(self.model.id)
         self.editor.context_menu(event.screenPos())
         event.accept()
 
     def paint(self, painter, option, widget=None):
         m, props = self.model, self.model.props
-        p = PALETTES[self.editor.project.theme]
+        p = palette(self.editor.project.theme, {**self.editor.project.colors, **props.get("colors", {})})
+        canvas = props.get("colors", {}).get("background", palette(self.editor.project.theme, self.editor.project.colors).background)
         w, h = m.width, m.height
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setClipRect(QRectF(0, 0, w, h))
+        painter.fillRect(QRectF(0, 0, w, h), QColor(canvas))
         painter.setFont(QFont("Segoe UI", 10))
         painter.setPen(QColor(p.text))
         rect = QRectF(1, 1, max(0, w-2), max(0, h-2))
@@ -150,51 +164,66 @@ class DesignItem(QGraphicsObject):
             painter.drawText(bounds or QRectF(10, 0, max(0, w-20), h), int(align), str(value))
 
         kind = m.kind
+        if props.get("state") == "disabled":
+            painter.setOpacity(0.5)
         if kind == "Label":
-            painter.fillRect(rect, QColor(p.surface))
+            painter.fillRect(rect, QColor(props.get("colors", {}).get("background", canvas)))
             painter.setFont(QFont("Segoe UI", props["font_size"], QFont.Weight.Bold if props["weight"] == "bold" else QFont.Weight.Normal))
             alignment = {"w": A.AlignLeft, "center": A.AlignHCenter, "e": A.AlignRight}[props["anchor"]]
             text(props["text"], QRectF(1, 0, w-2, h), alignment | A.AlignVCenter,
                  p.muted if props["muted"] else p.text)
         elif kind == "Button":
             variant = props["variant"]
-            fill = {"primary": p.accent, "secondary": p.panel, "danger": p.danger}[variant]
-            box(fill, radius=8)
-            painter.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+            fill = {"primary": p.accent, "secondary": p.surface, "danger": p.danger}[variant]
+            box(fill, p.border if variant == "secondary" else fill, radius=props["radius"])
+            painter.setFont(QFont("Segoe UI", props["font_size"]))
             text(props["text"], align=A.AlignCenter | Qt.TextFlag.TextWordWrap,
-                 color=p.text if variant == "secondary" else "#ffffff")
-        elif kind in ("Entry", "Textbox", "ComboBox"):
+                 color=props.get("colors", {}).get("text", p.text if variant == "secondary" else p.on_accent))
+        elif kind in ("Entry", "Textbox", "ComboBox", "SpinBox"):
             box(p.surface, p.border)
             if kind == "Textbox":
                 text(props["value"], QRectF(10, 8, w-20, h-16), A.AlignLeft | A.AlignTop | Qt.TextFlag.TextWordWrap)
             else:
-                text(props["value"], QRectF(10, 0, max(0, w-36), h))
-            if kind == "ComboBox":
+                value = props["value"]
+                if kind == "Entry" and props["show"]:
+                    value = props["show"][0]*len(value)
+                text(value, QRectF(10, 0, max(0, w-36), h))
+            if kind in ("ComboBox", "SpinBox"):
                 painter.setPen(QPen(QColor(p.muted), 1.5))
                 cx, cy = w-15, h/2
                 painter.drawPolyline(QPolygonF([QPointF(cx-4, cy-2), QPointF(cx, cy+2), QPointF(cx+4, cy-2)]))
-        elif kind in ("CheckBox", "Switch"):
-            painter.fillRect(rect, QColor(p.surface))
-            active = props["value"]
+                if kind == "SpinBox":
+                    painter.drawPolyline(QPolygonF([QPointF(cx-4, cy-8), QPointF(cx, cy-12), QPointF(cx+4, cy-8)]))
+        elif kind in ("CheckBox", "Switch", "RadioButton"):
+            painter.fillRect(rect, QColor(props.get("colors", {}).get("background", canvas)))
+            active = props["selected"] if kind == "RadioButton" else props["value"]
             cy = h/2
-            if kind == "CheckBox":
+            if kind == "RadioButton":
+                painter.setPen(QPen(QColor(p.accent if active else p.border), 1))
+                painter.setBrush(QColor(p.surface))
+                painter.drawEllipse(QPointF(12, cy), 8, 8)
+                if active:
+                    painter.setBrush(QColor(p.accent))
+                    painter.drawEllipse(QPointF(12, cy), 4, 4)
+                left = 27
+            elif kind == "CheckBox":
                 painter.setPen(QPen(QColor(p.accent if active else p.border), 1))
                 painter.setBrush(QColor(p.accent if active else p.panel))
                 painter.drawRect(QRectF(5, cy-7, 14, 14))
                 if active:
-                    painter.setPen(QPen(QColor("white"), 1.5))
+                    painter.setPen(QPen(QColor(p.on_accent), 1.5))
                     painter.drawPolyline(QPolygonF([QPointF(8, cy), QPointF(11, cy+3), QPointF(17, cy-4)]))
                 left = 27
             else:
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.setBrush(QColor(p.accent if active else p.border))
                 painter.drawRoundedRect(QRectF(1, cy-11, 42, 22), 11, 11)
-                painter.setBrush(QColor("white"))
+                painter.setBrush(QColor(p.thumb))
                 painter.drawEllipse(QPointF(32 if active else 12, cy), 8, 8)
                 left = 53
             text(props["text"], QRectF(left, 0, max(0, w-left), h))
         elif kind == "Slider":
-            painter.fillRect(rect, QColor(p.surface))
+            painter.fillRect(rect, QColor(canvas))
             painter.setPen(QPen(QColor(p.border), 4))
             painter.drawLine(QPointF(8, h/2), QPointF(w-8, h/2))
             painter.setPen(Qt.PenStyle.NoPen)
@@ -204,16 +233,18 @@ class DesignItem(QGraphicsObject):
             painter.fillRect(rect, QColor(p.panel))
             painter.fillRect(QRectF(1, 1, (w-2)*props["value"]/100, h-2), QColor(p.accent))
         elif kind == "Frame":
-            painter.fillRect(rect, QColor(getattr(p, props["variant"])))
+            painter.fillRect(rect, QColor(props.get("colors", {}).get("background", getattr(p, props["variant"]))))
         elif kind == "Separator":
             painter.fillRect(QRectF(0, 0, w, h), QColor(p.border))
         if self.isSelected():
+            painter.setOpacity(1)
             painter.setClipping(False)
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.setPen(QPen(QColor("#007acc"), 1, Qt.PenStyle.DashLine))
+            accent = self.editor.editor_colors.get("accent", "#007acc")
+            painter.setPen(QPen(QColor(accent), 1, Qt.PenStyle.DashLine))
             painter.drawRect(QRectF(0, 0, w, h))
-            painter.setPen(QPen(QColor("#007acc"), 1))
-            painter.setBrush(QColor("#ffffff"))
+            painter.setPen(QPen(QColor(accent), 1))
+            painter.setBrush(QColor(self.editor.editor_colors.get("input", "#ffffff")))
             for x, y in ((0, 0), (w-6, 0), (0, h-6), (w-6, h-6)):
                 painter.drawRect(QRectF(x, y, 6, 6))
 
@@ -226,6 +257,25 @@ class DesignView(QGraphicsView):
         self.setAlignment(A.AlignLeft | A.AlignTop)
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
+        self.zoom = 1.0
+
+    def zoom_to(self, factor):
+        self.zoom = max(0.25, min(3.0, factor))
+        self.resetTransform()
+        self.scale(self.zoom, self.zoom)
+        self.editor.statusBar().showMessage(f"Масштаб: {round(self.zoom*100)}%")
+
+    def fit_artboard(self):
+        self.fitInView(QRectF(-16, -16, self.editor.project.width+32, self.editor.project.height+32), Qt.AspectRatioMode.KeepAspectRatio)
+        self.zoom = self.transform().m11()
+
+    def wheelEvent(self, event):
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            self.zoom_to(self.zoom * (1.15 if event.angleDelta().y() > 0 else 1/1.15))
+            event.accept()
+        else:
+            super().wheelEvent(event)
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasFormat(MIME_WIDGET):

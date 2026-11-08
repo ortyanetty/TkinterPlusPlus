@@ -2,13 +2,14 @@
 from copy import deepcopy
 from pathlib import Path
 import os
+import json
 import re
 import sys
 
-from PyQt6.QtCore import QDir, QProcess, QProcessEnvironment, QRectF, QSize, QTemporaryFile, Qt
-from PyQt6.QtGui import QAction, QActionGroup, QColor, QFont, QIcon, QKeySequence, QPainter, QSyntaxHighlighter, QTextCharFormat
+from PyQt6.QtCore import QDir, QMimeData, QProcess, QProcessEnvironment, QRectF, QSize, QTemporaryFile, Qt, QUrl
+from PyQt6.QtGui import QAction, QActionGroup, QColor, QDesktopServices, QFont, QIcon, QKeySequence, QPainter, QSyntaxHighlighter, QTextCharFormat
 from PyQt6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDockWidget, QDoubleSpinBox, QFileDialog,
+    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDockWidget, QDoubleSpinBox, QFileDialog, QFormLayout,
     QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox,
     QPlainTextEdit, QPushButton, QSpinBox, QStyle, QTabWidget, QToolBar,
     QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
@@ -18,12 +19,21 @@ from .designer import Artboard, DesignItem, DesignScene, DesignView, PaletteList
 from .project import MAX_WIDGETS, Project, ProjectError, SPECS, WidgetModel, demo_project
 from .qt_theme import COLORS, apply_theme
 from . import __version__
+from .color_field import ColorField
+from .theme import COLOR_NAMES, palette
 
 PROPERTY_LABELS = {
     "text": "Текст", "value": "Значение", "options": "Варианты",
     "font_size": "Размер шрифта", "weight": "Начертание", "muted": "Приглушённый цвет",
     "anchor": "Выравнивание", "variant": "Оформление",
+    "state": "Состояние", "show": "Символ пароля", "radius": "Скругление",
+    "from_": "Минимум", "to": "Максимум", "increment": "Шаг", "selected": "Выбрана", "group": "Группа выбора",
 }
+COLOR_LABELS = {"background": "Фон", "surface": "Поверхность / ввод", "panel": "Панель / дорожка",
+                "text": "Текст", "muted": "Приглушённый текст", "border": "Граница",
+                "accent": "Акцент", "hover": "Наведение", "danger": "Опасное действие", "selection": "Выделение / нажатие",
+                "on_accent": "Текст на акценте", "thumb": "Бегунок переключателя"}
+CLIPBOARD_MIME = "application/x-tkinterplus-selection"
 
 
 class PythonHighlighter(QSyntaxHighlighter):
@@ -61,12 +71,15 @@ class Builder(QMainWindow):
         self.project = Project()
         self.path = None
         self.selected_id = None
+        self.selected_ids = set()
         self.history = []
         self.future = []
         self.saved = self.project.dumps()
         self.views = {}
         self.previews = []
         self.editor_theme = "dark"
+        self.editor_colors = {}
+        self.color_modes = {}
         self._build_actions()
         self._build_ui()
         self.set_editor_theme("dark")
@@ -77,6 +90,10 @@ class Builder(QMainWindow):
     @property
     def selected(self):
         return next((item for item in self.project.widgets if item.id == self.selected_id), None)
+
+    @property
+    def selected_items(self):
+        return [item for item in self.project.widgets if item.id in self.selected_ids]
 
     @property
     def dirty(self):
@@ -110,6 +127,10 @@ class Builder(QMainWindow):
         self.redo_action.setShortcuts([QKeySequence("Ctrl+Y"), QKeySequence("Ctrl+Shift+Z")])
         self.duplicate_action = self._action("Дублировать", self.duplicate, "Ctrl+D")
         self.delete_action = self._action("Удалить", self.delete_selected, "Delete")
+        self.copy_action = self._action("Копировать элементы", self.copy_widgets, "Ctrl+C")
+        self.cut_action = self._action("Вырезать элементы", self.cut_widgets, "Ctrl+X")
+        self.paste_action = self._action("Вставить элементы", self.paste_widgets, "Ctrl+V")
+        self.select_all_action = self._action("Выделить всё", self.select_all, "Ctrl+A")
         self.preview_action = self._action("Предпросмотр", self.preview, "F5", sp.SP_MediaPlay)
         self.snap_action = QAction("Сетка 8 px", self, checkable=True, checked=True)
         self.snap_action.toggled.connect(lambda checked: self.scene.update())
@@ -122,11 +143,14 @@ class Builder(QMainWindow):
         edit = self.menuBar().addMenu("Правка")
         edit.addActions([self.undo_action, self.redo_action])
         edit.addSeparator()
-        edit.addActions([self.duplicate_action, self.delete_action])
+        edit.addActions([self.copy_action, self.cut_action, self.paste_action, self.duplicate_action, self.delete_action, self.select_all_action])
         edit.addAction(self._action("На слой выше", lambda: self.reorder(1)))
         edit.addAction(self._action("На слой ниже", lambda: self.reorder(-1)))
         self.view_menu = self.menuBar().addMenu("Вид")
         self.view_menu.addAction(self.snap_action)
+        self.view_menu.addAction(self._action("Масштаб 100%", lambda: self.view.zoom_to(1)))
+        self.view_menu.addAction(self._action("Вписать окно", lambda: self.view.fit_artboard()))
+        self.view_menu.addAction(self._action("Цвета редактора…", self.edit_editor_colors))
         themes = self.view_menu.addMenu("Тема редактора")
         self.theme_group = QActionGroup(self)
         self.theme_actions = {}
@@ -143,7 +167,20 @@ class Builder(QMainWindow):
         project_menu.addSeparator()
         project_menu.addAction(self.preview_action)
         help_menu = self.menuBar().addMenu("Справка")
+        help_menu.addAction(self._action("Руководство по библиотеке", lambda: QDesktopServices.openUrl(
+            QUrl("https://github.com/ortyanetty/TkinterPlusPlus/blob/main/docs/library-guide.md"))))
         help_menu.addAction(self._action("О программе", self.about))
+        layout_menu = QMenu("Макет", self)
+        self.menuBar().insertMenu(self.view_menu.menuAction(), layout_menu)
+        self.layout_actions = []
+        for key, label in [("left", "По левому краю"), ("hcenter", "По центру горизонтально"),
+                           ("right", "По правому краю"), ("top", "По верхнему краю"),
+                           ("vcenter", "По центру вертикально"), ("bottom", "По нижнему краю"),
+                           ("width", "Одинаковая ширина"), ("height", "Одинаковая высота"),
+                           ("horizontal", "Распределить по горизонтали"), ("vertical", "Распределить по вертикали")]:
+            action = self._action(label, lambda operation=key: self.arrange(operation))
+            layout_menu.addAction(action)
+            self.layout_actions.append(action)
 
     def about(self):
         QMessageBox.about(self, "О программе", (
@@ -177,6 +214,10 @@ class Builder(QMainWindow):
         self.view = DesignView(self)
         self.scene = DesignScene(self)
         self.view.setScene(self.scene)
+        self.scene.selectionChanged.connect(self._scene_selection)
+        for action in [self.copy_action, self.cut_action, self.paste_action, self.select_all_action]:
+            action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            self.view.addAction(action)
         self.tabs.addTab(self.view, "Конструктор")
         code_page = QWidget()
         code_layout = QVBoxLayout(code_page)
@@ -222,7 +263,10 @@ class Builder(QMainWindow):
         self.layers = QTreeWidget()
         self.layers.setHeaderLabels(["Имя", "Тип"])
         self.layers.setColumnWidth(0, 155)
-        self.layers.currentItemChanged.connect(self._layer_select)
+        self.layers.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.layers.itemSelectionChanged.connect(self._layer_select)
+        for action in [self.copy_action, self.cut_action, self.paste_action, self.select_all_action]:
+            self.layers.addAction(action)
         outline_layout.addWidget(self.layers)
         row = QHBoxLayout()
         row.setContentsMargins(5, 0, 5, 5)
@@ -243,7 +287,8 @@ class Builder(QMainWindow):
         self.property_tree = QTreeWidget()
         self.property_tree.setHeaderLabels(["Свойство", "Значение"])
         self.property_tree.setIndentation(10)
-        self.property_tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.property_tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        self.property_tree.setColumnWidth(0, 135)
         self.property_tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         inspector_layout.addWidget(self.property_tree)
         self.apply_button = QPushButton("Применить")
@@ -258,7 +303,7 @@ class Builder(QMainWindow):
         self.output_dock = self._dock("Вывод", "output", self.output, Qt.DockWidgetArea.BottomDockWidgetArea)
         self.setCorner(Qt.Corner.BottomLeftCorner, Qt.DockWidgetArea.LeftDockWidgetArea)
         self.setCorner(Qt.Corner.BottomRightCorner, Qt.DockWidgetArea.RightDockWidgetArea)
-        self.resizeDocks([self.toolbox_dock, self.inspector_dock], [255, 330], Qt.Orientation.Horizontal)
+        self.resizeDocks([self.toolbox_dock, self.inspector_dock], [255, 420], Qt.Orientation.Horizontal)
         self.resizeDocks([self.toolbox_dock, self.outline_dock], [380, 230], Qt.Orientation.Vertical)
         self.resizeDocks([self.output_dock], [110], Qt.Orientation.Vertical)
         self.view_menu.addAction(self._action("Восстановить расположение панелей", self.restore_layout))
@@ -286,12 +331,36 @@ class Builder(QMainWindow):
 
     def set_editor_theme(self, name):
         self.editor_theme = name
-        apply_theme(self, name)
+        apply_theme(self, name, self.editor_colors)
         self.theme_actions[name].setChecked(True)
-        self.view.setBackgroundBrush(QColor(COLORS[name]["window"]))
+        self.view.setBackgroundBrush(QColor(self.editor_colors.get("window", COLORS[name]["window"])))
         self.highlighter.theme = name
         self.highlighter.rehighlight()
         self.scene.update()
+
+    def edit_editor_colors(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Цвета редактора")
+        form = QFormLayout(dialog)
+        fields = {}
+        for key, value in COLORS[self.editor_theme].items():
+            field = ColorField(self.editor_colors.get(key), value)
+            fields[key] = field
+            form.addRow({"window": "Рабочая область", "input": "Поля ввода"}.get(key, COLOR_LABELS.get(key, key)), field)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        def accept():
+            try:
+                values = {key: field.value() for key, field in fields.items()}
+            except ValueError as error:
+                QMessageBox.warning(dialog, "Цвет", str(error))
+                return
+            self.editor_colors = {key: value for key, value in values.items() if value}
+            self.set_editor_theme(self.editor_theme)
+            dialog.accept()
+        buttons.accepted.connect(accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+        dialog.exec()
 
     def _refresh(self, rebuild_scene=True):
         if rebuild_scene:
@@ -302,10 +371,13 @@ class Builder(QMainWindow):
         self._update_title()
         self.undo_action.setEnabled(bool(self.history))
         self.redo_action.setEnabled(bool(self.future))
-        self.duplicate_action.setEnabled(self.selected is not None)
-        self.delete_action.setEnabled(self.selected is not None)
+        self._selection_actions()
 
     def _render_scene(self):
+        self.selected_ids.intersection_update(item.id for item in self.project.widgets)
+        if self.selected_id not in self.selected_ids:
+            self.selected_id = next((item.id for item in self.project.widgets if item.id in self.selected_ids), None)
+        self.scene.blockSignals(True)
         self.scene.clear()
         self.views.clear()
         self.scene.setSceneRect(QRectF(-28, -28, self.project.width+56, self.project.height+56))
@@ -314,19 +386,47 @@ class Builder(QMainWindow):
             view = DesignItem(self, item)
             view.setZValue(index)
             self.scene.addItem(view)
-            view.setSelected(item.id == self.selected_id)
+            view.setSelected(item.id in self.selected_ids)
             self.views[item.id] = view
+        self.scene.blockSignals(False)
 
-    def select(self, item_id):
-        self.selected_id = item_id
+    def select(self, item_id, additive=False, toggle=False):
+        ids = set(self.selected_ids) if additive else set()
+        if item_id is not None:
+            if toggle and item_id in ids:
+                ids.remove(item_id)
+            else:
+                ids.add(item_id)
+        self.set_selection(ids, item_id)
+
+    def set_selection(self, ids, active=None):
+        self.selected_ids = set(ids) & {item.id for item in self.project.widgets}
+        self.selected_id = active if active in self.selected_ids else next(
+            (item.id for item in self.project.widgets if item.id in self.selected_ids), None)
+        self.scene.blockSignals(True)
         for name, item in self.views.items():
-            item.setSelected(name == item_id)
+            item.setSelected(name in self.selected_ids)
+        self.scene.blockSignals(False)
         self.layers.blockSignals(True)
-        self.layers.setCurrentItem(self.layer_items.get(item_id))
+        self.layers.clearSelection()
+        for name in self.selected_ids:
+            if name in self.layer_items:
+                self.layer_items[name].setSelected(True)
         self.layers.blockSignals(False)
         self._render_inspector()
-        self.duplicate_action.setEnabled(self.selected is not None)
-        self.delete_action.setEnabled(self.selected is not None)
+        self._selection_actions()
+
+    def _selection_actions(self):
+        for action in [self.duplicate_action, self.delete_action, self.copy_action, self.cut_action]:
+            action.setEnabled(bool(self.selected_ids))
+        for action in self.layout_actions:
+            action.setEnabled(len(self.selected_ids) >= 2)
+
+    def _scene_selection(self):
+        self.set_selection({item.model.id for item in self.scene.selectedItems() if isinstance(item, DesignItem)}, self.selected_id)
+
+    def select_all(self):
+        self.set_selection({item.id for item in self.project.widgets})
 
     def _refresh_layers(self):
         self.layers.blockSignals(True)
@@ -344,13 +444,15 @@ class Builder(QMainWindow):
             if item.id == self.selected_id:
                 selected = row
         self.layers.setCurrentItem(selected)
+        self.layers.clearSelection()
+        for name in self.selected_ids:
+            self.layer_items[name].setSelected(True)
         self.layers.blockSignals(False)
 
-    def _layer_select(self, current, previous):
-        if current is not None:
-            name = current.data(0, Qt.ItemDataRole.UserRole)
-            if name != self.selected_id:
-                self.select(name)
+    def _layer_select(self):
+        ids = {item.data(0, Qt.ItemDataRole.UserRole) for item in self.layers.selectedItems()}
+        current = self.layers.currentItem()
+        self.set_selection(ids - {None}, current.data(0, Qt.ItemDataRole.UserRole) if current else None)
 
     def _render_inspector(self):
         self.property_tree.clear()
@@ -358,6 +460,8 @@ class Builder(QMainWindow):
         self.field_widgets = {}
         item = self.selected
         self.object_label.setText(f"{item.id} : {item.kind}" if item else f"{self.project.title} : App")
+        if len(self.selected_ids) > 1:
+            self.object_label.setText(f"Выделено: {len(self.selected_ids)} · Свойства: {item.id}")
         common = self._property_group("Общие")
         if item:
             self._field(common, "id", "Имя", item.id)
@@ -366,6 +470,8 @@ class Builder(QMainWindow):
                 self._field(geometry, name, label, getattr(item, name))
             content = self._property_group("Содержимое")
             for name, value in item.props.items():
+                if name == "colors":
+                    continue
                 options = None
                 if name == "weight":
                     options = ("normal", "bold")
@@ -373,6 +479,8 @@ class Builder(QMainWindow):
                     options = ("w", "center", "e")
                 elif name == "variant":
                     options = ("primary", "secondary", "danger") if item.kind == "Button" else ("surface", "panel", "background")
+                elif name == "state":
+                    options = ("normal", "disabled", "readonly") if item.kind in ("Entry", "ComboBox", "SpinBox") else ("normal", "disabled")
                 self._field(content, "prop:"+name, PROPERTY_LABELS[name], value, options,
                             multiline=name in ("text", "options") or (name == "value" and item.kind == "Textbox"))
         else:
@@ -381,6 +489,19 @@ class Builder(QMainWindow):
             geometry = self._property_group("Расположение")
             self._field(geometry, "width", "Ширина", self.project.width)
             self._field(geometry, "height", "Высота", self.project.height)
+        colors = self._property_group("Цвета · пустое поле = тема")
+        overrides = item.props["colors"] if item else self.project.colors
+        inherited = palette(self.project.theme, self.project.colors) if item else palette(self.project.theme)
+        for name in COLOR_NAMES:
+            row = QTreeWidgetItem([COLOR_LABELS[name]])
+            row.setToolTip(0, COLOR_LABELS[name])
+            colors.addChild(row)
+            field = ColorField(overrides.get(name), getattr(inherited, name))
+            field.mode.setCurrentText(self.color_modes.get(name, "HEX"))
+            field.mode.currentTextChanged.connect(lambda mode, role=name: self.color_modes.update({role: mode}))
+            self.property_tree.setItemWidget(row, 1, field)
+            self.fields["color:"+name] = field.value
+            self.field_widgets["color:"+name] = field
         self.property_tree.expandAll()
 
     def _property_group(self, label):
@@ -407,15 +528,17 @@ class Builder(QMainWindow):
             widget.setTabChangesFocus(True)
             getter = widget.toPlainText
         elif type(value) in (int, float):
-            if key.startswith("prop:") and key != "prop:font_size":
+            if key.startswith("prop:") and key not in ("prop:font_size", "prop:radius"):
                 widget = QDoubleSpinBox()
-                widget.setRange(0, 100)
+                widget.setRange(-1000000, 1000000) if self.selected and self.selected.kind == "SpinBox" else widget.setRange(0, 100)
                 widget.setDecimals(2)
             else:
                 widget = QSpinBox()
                 widget.setRange(0, 4096)
                 if key == "prop:font_size":
                     widget.setRange(8, 72)
+                elif key == "prop:radius":
+                    widget.setRange(0, 30)
             widget.setValue(value)
             getter = widget.value
         else:
@@ -437,16 +560,23 @@ class Builder(QMainWindow):
         before = self.project.to_dict()
         try:
             data = self.project.to_dict()
+            try:
+                colors = {key[6:]: getter() for key, getter in self.fields.items() if key.startswith("color:")}
+            except ValueError as error:
+                raise ProjectError(str(error)) from error
+            colors = {key: value for key, value in colors.items() if value is not None}
             if self.selected:
                 candidate = self.selected.to_dict()
                 for key, getter in self.fields.items():
+                    if key.startswith("color:"):
+                        continue
                     value = getter()
                     if key.startswith("prop:"):
                         name = key[5:]
                         original = candidate["props"][name]
                         if name == "options":
                             value = value.splitlines()
-                        elif name == "font_size":
+                        elif name in ("font_size", "radius"):
                             value = int(value)
                         elif type(original) is bool:
                             value = bool(value)
@@ -455,14 +585,21 @@ class Builder(QMainWindow):
                         candidate["props"][name] = value
                     else:
                         candidate[key] = value.strip() if key == "id" else int(value)
+                candidate["props"]["colors"] = colors
                 node = WidgetModel.from_dict(candidate)
                 index = next(i for i, w in enumerate(self.project.widgets) if w.id == self.selected_id)
                 data["widgets"][index] = node.to_dict()
+                if node.kind == "RadioButton" and node.props["selected"]:
+                    for other in data["widgets"]:
+                        if other["id"] != node.id and other["kind"] == "RadioButton" and other["props"]["group"] == node.props["group"]:
+                            other["props"]["selected"] = False
                 updated = Project.from_dict(data)
+                self.selected_ids.discard(self.selected_id)
                 self.project, self.selected_id = updated, node.id
+                self.selected_ids.add(node.id)
             else:
                 data["window"].update(title=self.fields["title"](), width=int(self.fields["width"]()),
-                                      height=int(self.fields["height"]()), theme=self.fields["theme"]())
+                                      height=int(self.fields["height"]()), theme=self.fields["theme"](), colors=colors)
                 self.project = Project.from_dict(data)
         except (ValueError, OverflowError) as error:
             self._error(error if isinstance(error, ProjectError) else "Проверьте числовые значения свойств.")
@@ -478,6 +615,7 @@ class Builder(QMainWindow):
             self._error(error)
             return
         self.selected_id = item.id
+        self.selected_ids = {item.id}
         self._commit(before)
 
     def _commit(self, before, rebuild_scene=True):
@@ -493,6 +631,7 @@ class Builder(QMainWindow):
         self.future.append(self.project.to_dict())
         self.project = Project.from_dict(self.history.pop())
         self.selected_id = None
+        self.selected_ids.clear()
         self._refresh()
 
     def redo(self):
@@ -501,40 +640,149 @@ class Builder(QMainWindow):
         self.history.append(self.project.to_dict())
         self.project = Project.from_dict(self.future.pop())
         self.selected_id = None
+        self.selected_ids.clear()
         self._refresh()
 
-    def duplicate(self):
-        item = self.selected
-        if item is None:
+    def copy_widgets(self):
+        if not self.selected_items:
             return
-        if len(self.project.widgets) >= MAX_WIDGETS:
+        source = json.dumps({"format": "tkinterplus.widgets", "widgets": [item.to_dict() for item in self.selected_items]}, ensure_ascii=False)
+        mime = QMimeData()
+        mime.setData(CLIPBOARD_MIME, source.encode("utf-8"))
+        mime.setText(source)
+        QApplication.clipboard().setMimeData(mime)
+        self.statusBar().showMessage(f"Скопировано: {len(self.selected_ids)}")
+
+    def cut_widgets(self):
+        self.copy_widgets()
+        self.delete_selected()
+
+    def paste_widgets(self):
+        mime = QApplication.clipboard().mimeData()
+        if mime is None or not mime.hasFormat(CLIPBOARD_MIME):
+            self.statusBar().showMessage("В буфере нет элементов Tkinter++")
+            return
+        try:
+            raw = bytes(mime.data(CLIPBOARD_MIME))
+            if len(raw) > 5*1024*1024:
+                raise ProjectError("Буфер элементов слишком большой.")
+            data = json.loads(raw)
+            if data.get("format") != "tkinterplus.widgets" or not isinstance(data.get("widgets"), list):
+                raise ProjectError("Неверный формат буфера элементов.")
+            self._insert_copies([WidgetModel.from_dict(item) for item in data["widgets"]])
+        except (ValueError, TypeError, AttributeError, RecursionError) as error:
+            self._error(error)
+
+    def duplicate(self):
+        self._insert_copies(self.selected_items)
+
+    def _insert_copies(self, items):
+        if not items:
+            return
+        if len(self.project.widgets)+len(items) > MAX_WIDGETS:
             self._error(f"Предел — {MAX_WIDGETS} виджетов.")
             return
+        left, top = min(item.x for item in items), min(item.y for item in items)
+        right, bottom = max(item.x+item.width for item in items), max(item.y+item.height for item in items)
+        if right-left > self.project.width or bottom-top > self.project.height:
+            self._error("Группа элементов не помещается в окно.")
+            return
+        dx = min(left+16, self.project.width-(right-left))-left
+        dy = min(top+16, self.project.height-(bottom-top))-top
         before = self.project.to_dict()
-        clone = deepcopy(item)
-        clone.id = self.project.next_id(item.kind)
-        clone.x = min(item.x+16, self.project.width-item.width)
-        clone.y = min(item.y+16, self.project.height-item.height)
-        self.project.widgets.append(clone)
-        self.selected_id = clone.id
+        candidate = self.project.clone()
+        ids = set()
+        for item in items:
+            clone = deepcopy(item)
+            clone.id = candidate.next_id(item.kind)
+            if clone.kind == "RadioButton":
+                if clone.props["value"] == item.id:
+                    clone.props["value"] = clone.id
+                clone.props["selected"] = False
+            clone.x, clone.y = item.x+dx, item.y+dy
+            candidate.widgets.append(clone)
+            ids.add(clone.id)
+        self.project = Project.from_dict(candidate.to_dict())
+        self.selected_ids = ids
+        self.selected_id = candidate.widgets[-1].id
         self._commit(before)
 
     def delete_selected(self):
-        if self.selected is None:
+        if not self.selected_ids:
             return
         before = self.project.to_dict()
-        self.project.widgets.remove(self.selected)
+        self.project.widgets = [item for item in self.project.widgets if item.id not in self.selected_ids]
         self.selected_id = None
+        self.selected_ids.clear()
         self._commit(before)
 
     def nudge(self, dx, dy):
-        if self.selected is None:
+        items = self.selected_items
+        if not items:
             return
-        item = self.selected
         before = self.project.to_dict()
         step = 8 if self.snap_action.isChecked() else 1
-        item.x = max(0, min(item.x+dx*step, self.project.width-item.width))
-        item.y = max(0, min(item.y+dy*step, self.project.height-item.height))
+        self.move_selection(dx*step, dy*step)
+        self._commit(before)
+
+    def move_selection(self, dx, dy, originals=None):
+        items = self.selected_items
+        if not items:
+            return
+        originals = originals or {item.id: item.to_dict() for item in items}
+        left = min(originals[item.id]["x"] for item in items)
+        top = min(originals[item.id]["y"] for item in items)
+        right = max(originals[item.id]["x"]+item.width for item in items)
+        bottom = max(originals[item.id]["y"]+item.height for item in items)
+        dx = max(-left, min(round(dx), self.project.width-right))
+        dy = max(-top, min(round(dy), self.project.height-bottom))
+        for item in items:
+            item.x, item.y = originals[item.id]["x"]+dx, originals[item.id]["y"]+dy
+            self.views[item.id].setPos(item.x, item.y)
+            self.views[item.id].update()
+        self.update_geometry_fields()
+
+    def arrange(self, operation):
+        items = self.selected_items
+        if len(items) < 2:
+            return
+        before = self.project.to_dict()
+        reference = self.selected or items[0]
+        left, top = min(item.x for item in items), min(item.y for item in items)
+        right, bottom = max(item.x+item.width for item in items), max(item.y+item.height for item in items)
+        if operation in ("horizontal", "vertical"):
+            if len(items) < 3:
+                self.statusBar().showMessage("Для распределения выделите минимум три элемента")
+                return
+            horizontal = operation == "horizontal"
+            ordered = sorted(items, key=lambda item: item.x if horizontal else item.y)
+            span = right-left if horizontal else bottom-top
+            occupied = sum(item.width if horizontal else item.height for item in ordered)
+            gap = (span-occupied)/(len(items)-1)
+            if gap < 0:
+                self.statusBar().showMessage("Увеличьте расстояние между крайними элементами")
+                return
+            position = left if horizontal else top
+            for item in ordered:
+                setattr(item, "x" if horizontal else "y", round(position))
+                position += (item.width if horizontal else item.height)+gap
+        else:
+            # All dimensions are derived before modifying the active reference.
+            width, height = reference.width, reference.height
+            if (operation == "width" and any(item.x+width > self.project.width for item in items)) or (
+                    operation == "height" and any(item.y+height > self.project.height for item in items)):
+                self._error("Размер активного элемента не помещается в текущих позициях группы.")
+                return
+            for item in items:
+                if operation == "left": item.x = left
+                elif operation == "right": item.x = right-item.width
+                elif operation == "top": item.y = top
+                elif operation == "bottom": item.y = bottom-item.height
+                elif operation == "hcenter": item.x = round((left+right-item.width)/2)
+                elif operation == "vcenter": item.y = round((top+bottom-item.height)/2)
+                elif operation == "width": item.width = min(width, self.project.width-item.x)
+                elif operation == "height": item.height = min(height, self.project.height-item.y)
+                else: return
         self._commit(before)
 
     def reorder(self, direction):
@@ -548,7 +796,7 @@ class Builder(QMainWindow):
 
     def context_menu(self, position):
         menu = QMenu(self)
-        menu.addActions([self.duplicate_action, self.delete_action])
+        menu.addActions([self.copy_action, self.cut_action, self.paste_action, self.duplicate_action, self.delete_action])
         menu.addSeparator()
         menu.addAction("На слой выше", lambda: self.reorder(1))
         menu.addAction("На слой ниже", lambda: self.reorder(-1))
@@ -562,6 +810,7 @@ class Builder(QMainWindow):
 
     def _replace_project(self, project, path=None, saved=True):
         self.project = project
+        self.selected_ids.clear()
         self.path = Path(path) if path else None
         self.selected_id = None
         self.history.clear()

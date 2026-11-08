@@ -1,15 +1,15 @@
 # Third-party components in the Windows executable
 
-Tkinter++ 0.2.0 — Copyright (C) 2026 ortyanetty.
+Tkinter++ 0.3.0 — Copyright (C) 2026 ortyanetty.
 The application source is licensed under **GPL-3.0-only**; see `LICENSE`.
 It is provided without warranty. The source and build instructions are available
-at https://github.com/ortyanetty/TkinterPlusPlus/releases/tag/v0.2.0 .
+at https://github.com/ortyanetty/TkinterPlusPlus/releases/tag/v0.3.0 .
 
 The release includes Python, Qt, Tcl/Tk and the following dependencies. Their
 copyrights and licenses remain with their respective authors. The project
 license does not replace these component licenses.
 
-The release asset `TkinterPlusPlus-0.2.0-dependency-sources.zip` provides the
+The release asset `TkinterPlusPlus-0.3.0-dependency-sources.zip` provides the
 unmodified source distributions of PyQt6, SIP and PyInstaller. It is available
 next to the executable without charge. The complete corresponding sources of
 Qt, CPython, Tcl and Tk are available without charge at the version-specific

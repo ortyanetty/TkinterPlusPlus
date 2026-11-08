@@ -4,15 +4,15 @@ from PyQt6.QtGui import QColor, QPalette
 COLORS = {
     "dark": {"window": "#1e1e1e", "panel": "#252526", "input": "#333337",
              "border": "#3f3f46", "text": "#d4d4d4", "muted": "#969696",
-             "accent": "#007acc", "selection": "#094771", "hover": "#37373d"},
+             "accent": "#007acc", "selection": "#094771", "hover": "#37373d", "on_accent": "#ffffff"},
     "light": {"window": "#f5f5f5", "panel": "#eeeeF2", "input": "#ffffff",
               "border": "#ccccd1", "text": "#202020", "muted": "#666666",
-              "accent": "#007acc", "selection": "#cce8ff", "hover": "#e0e0e5"},
+              "accent": "#007acc", "selection": "#cce8ff", "hover": "#e0e0e5", "on_accent": "#ffffff"},
 }
 
 
-def apply_theme(window, name):
-    c = COLORS[name]
+def apply_theme(window, name, overrides=None):
+    c = {**COLORS[name], **(overrides or {})}
     palette = QPalette()
     for role, value in {
         QPalette.ColorRole.Window: c["window"], QPalette.ColorRole.WindowText: c["text"],
@@ -62,8 +62,8 @@ def apply_theme(window, name):
         QTabWidget::pane { border: 1px solid %(border)s; }
         QTabBar::tab { background: %(panel)s; color: %(muted)s; border: 1px solid %(border)s; padding: 6px 18px; }
         QTabBar::tab:selected { background: %(window)s; color: %(text)s; border-top: 2px solid %(accent)s; }
-        QStatusBar { background: %(accent)s; color: white; }
-        QStatusBar QLabel { color: white; padding: 0 5px; }
+        QStatusBar { background: %(accent)s; color: %(on_accent)s; }
+        QStatusBar QLabel { color: %(on_accent)s; padding: 0 5px; }
         QCheckBox { color: %(text)s; spacing: 6px; }
         QScrollBar:vertical { background: %(panel)s; width: 11px; margin: 0; }
         QScrollBar:horizontal { background: %(panel)s; height: 11px; margin: 0; }

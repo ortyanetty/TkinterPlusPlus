@@ -4,7 +4,8 @@
     "title": "Параметры проекта",
     "width": 760,
     "height": 560,
-    "theme": "dark"
+    "theme": "dark",
+    "colors": {}
   },
   "widgets": [
     {
@@ -19,7 +20,8 @@
         "font_size": 14,
         "weight": "bold",
         "muted": false,
-        "anchor": "w"
+        "anchor": "w",
+        "colors": {}
       }
     },
     {
@@ -34,7 +36,8 @@
         "font_size": 12,
         "weight": "bold",
         "muted": false,
-        "anchor": "w"
+        "anchor": "w",
+        "colors": {}
       }
     },
     {
@@ -49,7 +52,8 @@
         "font_size": 12,
         "weight": "normal",
         "muted": true,
-        "anchor": "w"
+        "anchor": "w",
+        "colors": {}
       }
     },
     {
@@ -59,7 +63,9 @@
       "y": 176,
       "width": 680,
       "height": 2,
-      "props": {}
+      "props": {
+        "colors": {}
+      }
     },
     {
       "id": "label_4",
@@ -73,7 +79,8 @@
         "font_size": 12,
         "weight": "bold",
         "muted": false,
-        "anchor": "w"
+        "anchor": "w",
+        "colors": {}
       }
     },
     {
@@ -84,7 +91,10 @@
       "width": 320,
       "height": 42,
       "props": {
-        "value": "Project1"
+        "value": "Project1",
+        "show": "",
+        "state": "normal",
+        "colors": {}
       }
     },
     {
@@ -99,7 +109,8 @@
         "font_size": 12,
         "weight": "bold",
         "muted": false,
-        "anchor": "w"
+        "anchor": "w",
+        "colors": {}
       }
     },
     {
@@ -115,7 +126,9 @@
           "Дизайн",
           "Личный проект"
         ],
-        "value": "Разработка"
+        "value": "Разработка",
+        "state": "readonly",
+        "colors": {}
       }
     },
     {
@@ -127,7 +140,9 @@
       "height": 36,
       "props": {
         "text": "Получать уведомления",
-        "value": true
+        "value": true,
+        "state": "normal",
+        "colors": {}
       }
     },
     {
@@ -139,7 +154,9 @@
       "height": 36,
       "props": {
         "text": "Сохранять настройки",
-        "value": true
+        "value": true,
+        "state": "normal",
+        "colors": {}
       }
     },
     {
@@ -154,7 +171,8 @@
         "font_size": 12,
         "weight": "normal",
         "muted": true,
-        "anchor": "w"
+        "anchor": "w",
+        "colors": {}
       }
     },
     {
@@ -165,7 +183,8 @@
       "width": 680,
       "height": 12,
       "props": {
-        "value": 75
+        "value": 75,
+        "colors": {}
       }
     },
     {
@@ -177,7 +196,11 @@
       "height": 44,
       "props": {
         "text": "Применить",
-        "variant": "primary"
+        "variant": "primary",
+        "state": "normal",
+        "font_size": 10,
+        "radius": 5,
+        "colors": {}
       }
     },
     {
@@ -189,7 +212,11 @@
       "height": 44,
       "props": {
         "text": "Отмена",
-        "variant": "secondary"
+        "variant": "secondary",
+        "state": "normal",
+        "font_size": 10,
+        "radius": 5,
+        "colors": {}
       }
     }
   ]

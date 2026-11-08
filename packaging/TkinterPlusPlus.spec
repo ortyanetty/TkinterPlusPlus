@@ -19,7 +19,7 @@ a.binaries = [entry for entry in a.binaries if Path(entry[0]).name.lower() != 'o
 pyz = PYZ(a.pure)
 exe = EXE(
     pyz, a.scripts, a.binaries, a.datas, [],
-    name='TkinterPlusPlus-0.2.0-windows-x64',
+    name='TkinterPlusPlus-0.3.0-windows-x64',
     debug=False, bootloader_ignore_signals=False, strip=False, upx=False,
     console=False, disable_windowed_traceback=False,
     version=str(root / 'packaging' / 'windows-version.txt'),

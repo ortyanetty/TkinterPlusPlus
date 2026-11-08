@@ -26,6 +26,34 @@ class ProjectTests(unittest.TestCase):
         self.assertNotIn("Custom", second.props["options"])
         self.assertNotIn("Custom", SPECS["ComboBox"].defaults["options"])
 
+    def test_old_projects_and_custom_palettes_round_trip(self):
+        project = demo_project()
+        legacy = project.to_dict()
+        legacy["window"].pop("colors")
+        for widget in legacy["widgets"]:
+            widget["props"].pop("colors")
+        restored = Project.from_dict(legacy)
+        self.assertEqual(restored.colors, {})
+        restored.colors = {"accent": (12, 34, 56), "background": "#aabbcc"}
+        restored.widgets[0].props["colors"] = {"text": [210, 220, 230]}
+        canonical = Project.loads(restored.dumps())
+        self.assertEqual(canonical.colors["accent"], "#0c2238")
+        self.assertEqual(canonical.widgets[0].props["colors"]["text"], "#d2dce6")
+        source = generate_python(canonical)
+        self.assertIn("app.widgets[", source)
+        self.assertIn("#0c2238", source)
+
+    def test_invalid_colors_and_spinbox_ranges_rejected(self):
+        for colors in ({"bogus": "#123456"}, {"accent": "red"}, {"surface": (True, 1, 2)}, {"text": [256, 0, 0]}):
+            project = Project(colors=colors)
+            with self.subTest(colors=colors), self.assertRaises(ProjectError):
+                project.dumps()
+        project = Project()
+        spin = project.add("SpinBox")
+        spin.props.update(from_=10, to=5)
+        with self.assertRaises(ProjectError):
+            project.dumps()
+
     def test_save_load_and_no_partial_overwrite_on_invalid_project(self):
         qa = WORKSPACE / ".qa"
         qa.mkdir(exist_ok=True)

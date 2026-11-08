@@ -6,9 +6,8 @@ from .widgets import App
 
 def build_preview(project):
     project = Project.from_dict(project.to_dict())
-    app = App(title=project.title, width=project.width, height=project.height, theme=project.theme)
+    app = App(title=project.title, width=project.width, height=project.height, theme=project.theme, colors=project.colors)
     app.resizable(False, False)
-    app.configure(background=app.colors.surface)
     for item in project.widgets:
         create_widget(app, item)
     return app
