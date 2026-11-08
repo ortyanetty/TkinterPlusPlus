@@ -35,19 +35,26 @@ python -m venv .venv
 ```python
 import tkinterplus as ui
 
-app = ui.App(title="Моя программа", width=420, height=240, theme="light")
+root = ui.Tk()
+root.title("Моя программа")
+root.geometry("420x240")
 
-status = ui.Label(app, text="Ожидание нажатия")
-status.pack(pady=(36, 20))
+status = ui.Label(root, text="Ожидание нажатия")
+status.pack(pady=30)
 
 def on_click():
     status.configure(text="Кнопка нажата")
 
-button = ui.Button(app, text="Нажать", command=on_click, width=180, height=40)
+button = ui.Button(root, text="Нажать", bg="#2563eb", fg="white", command=on_click)
 button.pack()
-
-app.mainloop()
+root.mainloop()
 ```
+
+`root = ui.Tk()` создаёт окно. `title()` задаёт заголовок, `geometry("420x240")` — размер. `ui.Button(root, ...)` создаёт кнопку в окне `root`, а `pack()` размещает её. `root.mainloop()` в конце запускает обработку нажатий.
+
+`text` — надпись, `bg` — фон кнопки, `fg` — цвет текста. Можно передать HEX `"#2563eb"`, RGB `(37, 99, 235)` или имя цвета Tkinter, например `"white"`. После создания цвет меняется так: `button.configure(bg=(20, 100, 180))` или `button["bg"] = "#1464b4"`.
+
+В следующих примерах `app` означает созданное окно; его можно назвать и `root`. Старое имя `ui.App(...)` продолжает работать. Готовая простая программа: [examples/simple_button.py](../examples/simple_button.py).
 
 `command=on_click` передаёт функцию, которая вызывается при нажатии. Скобки в `command=on_click()` вызовут её сразу при создании кнопки.
 
@@ -293,19 +300,32 @@ ui.Separator(app, colors={"border": "#9ca6b8"}).pack(fill="x", padx=24, pady=16)
 
 ## Как использовать экспорт редактора
 
-Экспортируйте проект в `generated_app.py`. Файл содержит функцию `build_app()`. Виджеты доступны по именам из редактора через `app.widgets`:
+Экспортируйте проект в `generated_app.py`. Получится обычный Python с окном `root` и переменными `button_1`, `entry_1` и другими именами из редактора:
 
 ```python
-from generated_app import build_app
+import tkinterplus as ui
 
-app = build_app()
-button = app.widgets["button_1"]
-entry = app.widgets["entry_1"]
-button.configure(command=lambda: print(entry.get()))
-app.mainloop()
+root = ui.Tk()
+root.title("Форма")
+root.geometry("420x240")
+
+entry_1 = ui.Entry(root)
+entry_1.place(x=24, y=24, width=260, height=38)
+button_1 = ui.Button(root, text="Показать имя")
+button_1.place(x=24, y=80, width=180, height=38)
+
+# Добавьте обработчик после создания виджетов, перед mainloop:
+button_1.configure(command=lambda: print(entry_1.get()))
+
+if __name__ == "__main__":
+    root.mainloop()
 ```
 
-Так можно хранить обработчики в отдельном файле и повторно экспортировать макет. Имена `button_1` и `entry_1` замените на реальные имена элементов вашего проекта. Этот словарь присутствует в экспорте начиная с версии 0.3.
+Редактор экспортирует внешний вид; обработчики и логику вы добавляете в Python. Повторный экспорт перезаписывает файл, поэтому сохраняйте свои изменения отдельно.
+
+Для существующих программ с фабрикой доступен `generate_python(project, style="function")`. Он создаёт `build_app()` и словарь `root.widgets`, как в предыдущем экспорте. Старые имена классов также сохранены: `App`, `Textbox`, `CheckBox`, `RadioButton`, `ComboBox`, `SpinBox`, `Slider`, `ProgressBar`. Привычные имена `Tk`, `Text`, `Checkbutton`, `Radiobutton`, `Combobox`, `Spinbox`, `Scale`, `Progressbar` обозначают те же классы.
+
+**Настоящий холст:** «Конструктор» позволяет выделять, перемещать и менять размеры. Нажмите **«Проверка» / F6**, чтобы вводить текст, переключать флажки, открывать списки и двигать ползунки. Повторное F6 возвращает конструктор и значения проекта. F5 открывает отдельное окно. Проверка не изменяет сохранённые свойства.
 
 В редакторе: Ctrl+щелчок, рамка мышью или Ctrl+A выделяют несколько элементов; Ctrl+C/X/V копируют, вырезают и вставляют группу. Меню «Макет» выравнивает элементы, задаёт одинаковые размеры по активному элементу и распределяет промежутки (нужно минимум три элемента). Свойства справа относятся к указанному активному элементу, групповое перемещение и команды «Макет» — ко всему выделению. Ctrl+колесо меняет масштаб.
 

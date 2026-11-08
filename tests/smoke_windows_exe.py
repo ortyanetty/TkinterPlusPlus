@@ -11,7 +11,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from tkinterplus.project import Project, SPECS
-EXE = ROOT / "dist" / "TkinterPlusPlus-0.3.0-windows-x64.exe"
+EXE = ROOT / "dist" / "TkinterPlusPlus-0.4.0-windows-x64.exe"
 RUN = ROOT / ".qa" / "standalone-run"
 RUN.mkdir(exist_ok=True, parents=True)
 (ROOT / ".qa" / "temp").mkdir(exist_ok=True)
@@ -120,6 +120,22 @@ for name, arguments, expected in [
         print(name, "window:", matched[1], matched[2], flush=True)
         # Exercise the editor's F5 action too; only the application window receives these events.
         if name == "editor":
+            native_children = []
+            @CALLBACK
+            def native_child(hwnd, _):
+                cls = ctypes.create_unicode_buffer(200)
+                user.GetClassNameW(hwnd, cls, len(cls))
+                if cls.value.startswith("Tk") and user.IsWindowVisible(hwnd):
+                    native_children.append(cls.value)
+                return True
+            for _ in range(30):
+                native_children.clear()
+                user.EnumChildWindows(matched[0], native_child, 0)
+                if len(native_children) >= 2:
+                    break
+                time.sleep(.1)
+            assert len(native_children) >= 2, f"Native Tk canvas missing: {native_children}"
+            print("embedded native Tk canvas: OK", flush=True)
             user.PostMessageW(matched[0], 0x0100, 0x74, 0)
             user.PostMessageW(matched[0], 0x0101, 0x74, 0)
             for _ in range(60):

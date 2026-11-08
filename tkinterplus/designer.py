@@ -1,13 +1,17 @@
-"""Qt design surface; project models remain independent of the editor toolkit."""
-from PyQt6.QtCore import QMimeData, QPointF, QRectF, Qt
-from PyQt6.QtGui import QColor, QDrag, QFont, QPainter, QPen, QPolygonF
-from PyQt6.QtWidgets import QGraphicsItem, QGraphicsObject, QGraphicsRectItem, QGraphicsScene, QGraphicsView, QListWidget
+"""Windows design surface hosting the same Tk widgets as exported applications."""
+import ctypes
+from ctypes import wintypes
+import sys
+import tkinter as tk
 
-from .project import SPECS
-from .theme import palette
+from PyQt6.QtCore import QEvent, QMimeData, QPoint, QPointF, QRectF, QTimer, Qt
+from PyQt6.QtGui import QDrag
+from PyQt6.QtWidgets import QListWidget, QScrollArea, QWidget
+
+from .project import SPECS, create_widget
+from .widgets import App
 
 MIME_WIDGET = "application/x-tkinterplus-widget"
-A = Qt.AlignmentFlag
 
 
 class PaletteList(QListWidget):
@@ -22,263 +26,329 @@ class PaletteList(QListWidget):
         drag.exec(Qt.DropAction.CopyAction)
 
 
-class Artboard(QGraphicsRectItem):
-    def __init__(self, editor):
-        super().__init__(0, 0, editor.project.width, editor.project.height)
-        self.editor = editor
-        self.setZValue(-1)
-        self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
-        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemUsesExtendedStyleOption)
+class WidgetHandle:
+    """Adapter between the editor selection model and a real Tk widget."""
+    def __init__(self, view, model, widget):
+        self.view, self.model, self.widget = view, model, widget
 
-    def paint(self, painter, option, widget=None):
-        p = palette(self.editor.project.theme, self.editor.project.colors)
-        painter.fillRect(self.rect(), QColor(p.background))
-        if self.editor.snap_action.isChecked():
-            exposed = option.exposedRect.intersected(self.rect())
-            points = QPolygonF([QPointF(x, y)
-                for x in range(max(8, int(exposed.left())//8*8), int(exposed.right()), 8)
-                for y in range(max(8, int(exposed.top())//8*8), int(exposed.bottom()), 8)])
-            grid = QColor(p.border)
-            grid.setAlpha(95)
-            painter.setPen(QPen(grid, 1))
-            painter.drawPoints(points)
-        painter.setPen(QPen(QColor(p.border), 1))
-        painter.drawRect(self.rect())
+    def setPos(self, x, y):
+        self.widget.place(x=x, y=y)
+
+    def update(self):
+        self.widget.place(width=self.model.width, height=self.model.height)
+        self.view.refresh_selection()
+
+    def isSelected(self):
+        return self.model.id in self.view.editor.selected_ids
 
 
-class DesignScene(QGraphicsScene):
-    def __init__(self, editor):
-        super().__init__(editor)
-        self.editor = editor
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            hit = self.itemAt(event.scenePos(), self.editor.view.transform())
-            if not isinstance(hit, DesignItem) and not event.modifiers() & Qt.KeyboardModifier.ControlModifier:
-                self.editor.select(None)
-        super().mousePressEvent(event)
-
-
-class DesignItem(QGraphicsObject):
-    def __init__(self, editor, model):
-        super().__init__()
-        self.editor = editor
-        self.model = model
-        self.before = None
-        self.start = None
-        self.original = None
-        self.resizing = False
-        self.group_originals = {}
-        self.setPos(model.x, model.y)
-        self.setFlags(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable |
-                      QGraphicsItem.GraphicsItemFlag.ItemIsFocusable)
-        self.setAcceptHoverEvents(True)
-        self.setToolTip(f"{model.id} : {model.kind}")
-
-    def boundingRect(self):
-        return QRectF(-1, -1, self.model.width+2, self.model.height+2)
-
-    def handle_rect(self):
-        return QRectF(self.model.width-9, self.model.height-9, 10, 10)
-
-    def hoverMoveEvent(self, event):
-        resizing = self.isSelected() and self.handle_rect().contains(event.pos())
-        self.setCursor(Qt.CursorShape.SizeFDiagCursor if resizing else Qt.CursorShape.SizeAllCursor)
-        super().hoverMoveEvent(event)
-
-    def mousePressEvent(self, event):
-        if event.button() != Qt.MouseButton.LeftButton:
-            event.ignore()
-            return
-        self.resizing = self.isSelected() and self.handle_rect().contains(event.pos())
-        control = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
-        if control:
-            self.editor.select(self.model.id, additive=True, toggle=True)
-        elif self.model.id not in self.editor.selected_ids:
-            self.editor.select(self.model.id)
-        else:
-            self.editor.set_selection(self.editor.selected_ids, self.model.id)
-        if self.model.id not in self.editor.selected_ids:
-            event.accept()
-            return
-        self.resizing = self.resizing and len(self.editor.selected_ids) == 1
-        self.setFocus()
-        self.before = self.editor.project.to_dict()
-        self.start = QPointF(event.scenePos())
-        self.original = self.model.to_dict()
-        self.group_originals = {item.id: item.to_dict() for item in self.editor.selected_items}
-        event.accept()
-
-    def mouseMoveEvent(self, event):
-        if self.before is not None:
-            self.transform_to(event.scenePos())
-        event.accept()
-
-    def transform_to(self, position):
-        dx, dy = position.x()-self.start.x(), position.y()-self.start.y()
-        m, original = self.model, self.original
-        if self.resizing:
-            self.prepareGeometryChange()
-            m.width = max(16, min(self.editor.snap(original["width"]+dx), self.editor.project.width-m.x))
-            m.height = max(2, min(self.editor.snap(original["height"]+dy), self.editor.project.height-m.y))
-        else:
-            self.editor.move_selection(self.editor.snap(original["x"]+dx)-original["x"],
-                                       self.editor.snap(original["y"]+dy)-original["y"], self.group_originals)
-        self.update()
-        self.editor.update_geometry_fields()
-        self.editor.statusBar().showMessage(f"{m.id}   X: {m.x}  Y: {m.y}   {m.width} × {m.height} px")
-
-    def mouseReleaseEvent(self, event):
-        if self.before is not None:
-            if event.scenePos() != self.start:
-                self.transform_to(event.scenePos())
-            before, self.before = self.before, None
-            self.editor._commit(before, rebuild_scene=False)
-        event.accept()
-
-    def contextMenuEvent(self, event):
-        if self.model.id not in self.editor.selected_ids:
-            self.editor.select(self.model.id)
-        self.editor.context_menu(event.screenPos())
-        event.accept()
-
-    def paint(self, painter, option, widget=None):
-        m, props = self.model, self.model.props
-        p = palette(self.editor.project.theme, {**self.editor.project.colors, **props.get("colors", {})})
-        canvas = props.get("colors", {}).get("background", palette(self.editor.project.theme, self.editor.project.colors).background)
-        w, h = m.width, m.height
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setClipRect(QRectF(0, 0, w, h))
-        painter.fillRect(QRectF(0, 0, w, h), QColor(canvas))
-        painter.setFont(QFont("Segoe UI", 10))
-        painter.setPen(QColor(p.text))
-        rect = QRectF(1, 1, max(0, w-2), max(0, h-2))
-
-        def box(fill, border=None, radius=2):
-            painter.setBrush(QColor(fill))
-            painter.setPen(QPen(QColor(border or fill), 1))
-            painter.drawRoundedRect(rect, radius, radius)
-
-        def text(value, bounds=None, align=A.AlignLeft | A.AlignVCenter, color=None):
-            painter.setPen(QColor(color or p.text))
-            painter.drawText(bounds or QRectF(10, 0, max(0, w-20), h), int(align), str(value))
-
-        kind = m.kind
-        if props.get("state") == "disabled":
-            painter.setOpacity(0.5)
-        if kind == "Label":
-            painter.fillRect(rect, QColor(props.get("colors", {}).get("background", canvas)))
-            painter.setFont(QFont("Segoe UI", props["font_size"], QFont.Weight.Bold if props["weight"] == "bold" else QFont.Weight.Normal))
-            alignment = {"w": A.AlignLeft, "center": A.AlignHCenter, "e": A.AlignRight}[props["anchor"]]
-            text(props["text"], QRectF(1, 0, w-2, h), alignment | A.AlignVCenter,
-                 p.muted if props["muted"] else p.text)
-        elif kind == "Button":
-            variant = props["variant"]
-            fill = {"primary": p.accent, "secondary": p.surface, "danger": p.danger}[variant]
-            box(fill, p.border if variant == "secondary" else fill, radius=props["radius"])
-            painter.setFont(QFont("Segoe UI", props["font_size"]))
-            text(props["text"], align=A.AlignCenter | Qt.TextFlag.TextWordWrap,
-                 color=props.get("colors", {}).get("text", p.text if variant == "secondary" else p.on_accent))
-        elif kind in ("Entry", "Textbox", "ComboBox", "SpinBox"):
-            box(p.surface, p.border)
-            if kind == "Textbox":
-                text(props["value"], QRectF(10, 8, w-20, h-16), A.AlignLeft | A.AlignTop | Qt.TextFlag.TextWordWrap)
-            else:
-                value = props["value"]
-                if kind == "Entry" and props["show"]:
-                    value = props["show"][0]*len(value)
-                text(value, QRectF(10, 0, max(0, w-36), h))
-            if kind in ("ComboBox", "SpinBox"):
-                painter.setPen(QPen(QColor(p.muted), 1.5))
-                cx, cy = w-15, h/2
-                painter.drawPolyline(QPolygonF([QPointF(cx-4, cy-2), QPointF(cx, cy+2), QPointF(cx+4, cy-2)]))
-                if kind == "SpinBox":
-                    painter.drawPolyline(QPolygonF([QPointF(cx-4, cy-8), QPointF(cx, cy-12), QPointF(cx+4, cy-8)]))
-        elif kind in ("CheckBox", "Switch", "RadioButton"):
-            painter.fillRect(rect, QColor(props.get("colors", {}).get("background", canvas)))
-            active = props["selected"] if kind == "RadioButton" else props["value"]
-            cy = h/2
-            if kind == "RadioButton":
-                painter.setPen(QPen(QColor(p.accent if active else p.border), 1))
-                painter.setBrush(QColor(p.surface))
-                painter.drawEllipse(QPointF(12, cy), 8, 8)
-                if active:
-                    painter.setBrush(QColor(p.accent))
-                    painter.drawEllipse(QPointF(12, cy), 4, 4)
-                left = 27
-            elif kind == "CheckBox":
-                painter.setPen(QPen(QColor(p.accent if active else p.border), 1))
-                painter.setBrush(QColor(p.accent if active else p.panel))
-                painter.drawRect(QRectF(5, cy-7, 14, 14))
-                if active:
-                    painter.setPen(QPen(QColor(p.on_accent), 1.5))
-                    painter.drawPolyline(QPolygonF([QPointF(8, cy), QPointF(11, cy+3), QPointF(17, cy-4)]))
-                left = 27
-            else:
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QColor(p.accent if active else p.border))
-                painter.drawRoundedRect(QRectF(1, cy-11, 42, 22), 11, 11)
-                painter.setBrush(QColor(p.thumb))
-                painter.drawEllipse(QPointF(32 if active else 12, cy), 8, 8)
-                left = 53
-            text(props["text"], QRectF(left, 0, max(0, w-left), h))
-        elif kind == "Slider":
-            painter.fillRect(rect, QColor(canvas))
-            painter.setPen(QPen(QColor(p.border), 4))
-            painter.drawLine(QPointF(8, h/2), QPointF(w-8, h/2))
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor(p.accent))
-            painter.drawEllipse(QPointF(8+(w-16)*props["value"]/100, h/2), 7, 7)
-        elif kind == "ProgressBar":
-            painter.fillRect(rect, QColor(p.panel))
-            painter.fillRect(QRectF(1, 1, (w-2)*props["value"]/100, h-2), QColor(p.accent))
-        elif kind == "Frame":
-            painter.fillRect(rect, QColor(props.get("colors", {}).get("background", getattr(p, props["variant"]))))
-        elif kind == "Separator":
-            painter.fillRect(QRectF(0, 0, w, h), QColor(p.border))
-        if self.isSelected():
-            painter.setOpacity(1)
-            painter.setClipping(False)
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            accent = self.editor.editor_colors.get("accent", "#007acc")
-            painter.setPen(QPen(QColor(accent), 1, Qt.PenStyle.DashLine))
-            painter.drawRect(QRectF(0, 0, w, h))
-            painter.setPen(QPen(QColor(accent), 1))
-            painter.setBrush(QColor(self.editor.editor_colors.get("input", "#ffffff")))
-            for x, y in ((0, 0), (w-6, 0), (0, h-6), (w-6, h-6)):
-                painter.drawRect(QRectF(x, y, 6, 6))
-
-
-class DesignView(QGraphicsView):
+class DesignView(QScrollArea):
     def __init__(self, editor):
         super().__init__()
+        if sys.platform != "win32":
+            raise RuntimeError("Встроенный конструктор этой версии поддерживает Windows.")
         self.editor = editor
-        self.setAcceptDrops(True)
-        self.setAlignment(A.AlignLeft | A.AlignTop)
-        self.setRenderHint(QPainter.RenderHint.Antialiasing)
-        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
         self.zoom = 1.0
+        self.testing = False
+        self.root = None
+        self.handles = {}
+        self._targets = {}
+        self._outlines = []
+        self._gesture = None
+        self._pumping = False
+        self._closed = False
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self.setAcceptDrops(True)
+        self.host = QWidget()
+        self.host.setAttribute(Qt.WidgetAttribute.WA_NativeWindow)
+        self.host.setAcceptDrops(True)
+        self.host.installEventFilter(self)
+        self.setWidget(self.host)
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.pump)
+        self.timer.start(10)
+        self.api = ctypes.windll.user32
+        self.api.SetParent.argtypes = [wintypes.HWND, wintypes.HWND]
+        self.api.SetParent.restype = wintypes.HWND
+        self.api.GetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int]
+        self.api.GetWindowLongPtrW.restype = ctypes.c_ssize_t
+        self.api.SetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_ssize_t]
+        self.api.SetWindowLongPtrW.restype = ctypes.c_ssize_t
+        self.api.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+                                         ctypes.c_int, ctypes.c_int, wintypes.UINT]
+        self.api.GetParent.argtypes = [wintypes.HWND]
+        self.api.GetParent.restype = wintypes.HWND
+
+    @property
+    def density(self):
+        return self.devicePixelRatioF()*self.zoom
+
+    def _make_root(self, project):
+        self.root = App(width=project.width, height=project.height, theme=project.theme,
+                        colors=project.colors, scale=self.density)
+        self.root.overrideredirect(True)
+        self.root.geometry(f"{project.width}x{project.height}+10000+10000")
+        self.root.update()
+        self.native_handle = int(self.root.frame(), 16)
+        self.api.SetParent(self.native_handle, int(self.host.winId()))
+        style = self.api.GetWindowLongPtrW(self.native_handle, -16)
+        self.api.SetWindowLongPtrW(self.native_handle, -16, (style | 0x40000000) & ~0x80000000)
+        for sequence, callback in [("<ButtonPress-1>", self._press), ("<B1-Motion>", self._motion),
+                                   ("<ButtonRelease-1>", self._release), ("<KeyPress>", self._key),
+                                   ("<ButtonPress-3>", self._context_menu),
+                                   ("<MouseWheel>", self._wheel), ("<Enter>", self._hover),
+                                   ("<Leave>", self._hover), ("<Motion>", self._hover)]:
+            self.root.bind_class("TPDesigner", sequence, callback)
+
+    def render(self, project):
+        if self._closed:
+            return
+        if self.root is None:
+            self._make_root(project)
+        self._gesture = None
+        for child in self.root.winfo_children():
+            child.destroy()
+        self._outlines = []
+        self.handles.clear()
+        self._targets.clear()
+        self.root._radio_groups = {}
+        self.root._density = self.density
+        self.root.tk.call("tk", "scaling", (4/3)*self.density)
+        self.root._theme.overrides = dict(project.colors)
+        self.root.set_theme(project.theme)
+        self.host.setFixedSize(round(project.width*self.zoom), round(project.height*self.zoom))
+        self.root.geometry(f"{project.width}x{project.height}")
+        self.api.SetWindowPos(self.native_handle, None, 0, 0,
+                              self.root.px(project.width), self.root.px(project.height), 0x0040 | 0x0020 | 0x0010)
+        self.background = tk.Canvas(self.root, highlightthickness=0, borderwidth=0,
+                                    background=self.root.colors.background)
+        self.background.place(x=0, y=0, relwidth=1, relheight=1)
+        self._bind_widget(self.background, None)
+        for model in project.widgets:
+            widget = create_widget(self.root, model)
+            self.handles[model.id] = WidgetHandle(self, model, widget)
+            self._bind_widget(widget, model.id)
+        self.draw_grid()
+        self.refresh_selection()
+        self.pump()
+
+    def _show_native(self):
+        if self.root is not None and not self._closed and self.isVisible():
+            self.api.SetWindowPos(self.native_handle, None, 0, 0,
+                                  self.root.px(self.editor.project.width), self.root.px(self.editor.project.height),
+                                  0x0040 | 0x0020 | 0x0010)
+            self.pump()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # Qt maps its host after this event. Restore Tk's foreign child afterwards,
+        # including when returning from the Code tab.
+        QTimer.singleShot(0, self._show_native)
+
+    def event(self, event):
+        result = super().event(event)
+        if event.type() == QEvent.Type.DevicePixelRatioChange and getattr(self, "root", None) is not None:
+            QTimer.singleShot(0, lambda: self.render(self.editor.project))
+        return result
+
+    def _bind_widget(self, widget, name):
+        self._targets[str(widget)] = name
+        widget.bindtags(("TPDesigner",) + tuple(tag for tag in widget.bindtags() if tag != "TPDesigner"))
+        for child in widget.winfo_children():
+            self._bind_widget(child, name)
+
+    def pump(self):
+        if self._closed or self._pumping or self.root is None:
+            return
+        self._pumping = True
+        try:
+            self.root.update()
+        finally:
+            self._pumping = False
+
+    def set_testing(self, enabled):
+        self.testing = bool(enabled)
+        self.render(self.editor.project)
+        self.editor.views = self.handles
+        self.editor.tabs.setTabText(0, "Проверка" if enabled else "Конструктор")
+        self.editor.statusBar().showMessage("Проверка: элементы работают. F6 — вернуться в конструктор."
+                                            if enabled else "Конструктор: выделение, перемещение и размер элементов")
+
+    def draw_grid(self):
+        if self.root is None:
+            return
+        canvas, p = self.background, self.root.colors
+        canvas.delete("grid")
+        if self.editor.snap_action.isChecked() and not self.testing:
+            step = max(1, self.root.px(8))
+            grid = "#"+"".join(f"{round(int(p.border[i:i+2], 16)*0.35+int(p.background[i:i+2], 16)*0.65):02x}"
+                               for i in (1, 3, 5))
+            for y in range(step, self.root.px(self.editor.project.height), step):
+                canvas.create_line(step, y, self.root.px(self.editor.project.width)-1, y,
+                                   dash=(1, max(1, step-1)), fill=grid, tags="grid")
+
+    def refresh_selection(self):
+        if self.root is None:
+            return
+        # Reuse outlines while dragging so Tk retains its pressed window and mouse grab.
+        needed = [] if self.testing else list(self.editor.selected_items)
+        while len(self._outlines) < len(needed)*5:
+            frame = tk.Frame(self.root, borderwidth=0)
+            self._outlines.append(frame)
+        for index, frame in enumerate(self._outlines):
+            if index >= len(needed)*5:
+                frame.place_forget()
+                continue
+            model = needed[index//5]
+            x, y, w, h = model.x, model.y, model.width, model.height
+            rx, ry, rw, rh, resize = [(x, y, w, 1, False), (x, y+h-1, w, 1, False),
+                                     (x, y, 1, h, False), (x+w-1, y, 1, h, False),
+                                     (x+w-7, y+h-7, 7, 7, True)][index % 5]
+            frame.configure(bg=self.editor.editor_colors.get("accent", "#007acc"),
+                            cursor="size_nw_se" if resize else "fleur")
+            frame.place(x=self.root.px(rx), y=self.root.px(ry),
+                        width=max(1, self.root.px(rw)), height=max(1, self.root.px(rh)))
+            frame.lift()
+            frame._resize_handle = resize
+            self._bind_widget(frame, model.id)
+
+    def _point(self, event):
+        return ((event.x + event.widget.winfo_rootx()-self.root.winfo_rootx())/self.density,
+                (event.y + event.widget.winfo_rooty()-self.root.winfo_rooty())/self.density)
+
+    def _press(self, event):
+        if self.testing:
+            return
+        x, y = self._point(event)
+        name = self._targets.get(str(event.widget))
+        additive = bool(event.state & 0x0004)
+        resize = getattr(event.widget, "_resize_handle", False)
+        if name is None:
+            if not additive:
+                self.editor.select(None)
+        elif additive:
+            self.editor.select(name, additive=True, toggle=True)
+        elif name not in self.editor.selected_ids:
+            self.editor.select(name)
+        event.widget.focus_set()
+        self._gesture = {"start": (x, y), "before": self.editor.project.to_dict(), "name": name,
+                         "resize": resize, "base_selection": set(self.editor.selected_ids),
+                         "originals": {item.id: item.to_dict() for item in self.editor.selected_items}}
+        return "break"
+
+    def _motion(self, event):
+        if self.testing:
+            return
+        if not self._gesture:
+            return "break"
+        g = self._gesture
+        x, y = self._point(event)
+        sx, sy = g["start"]
+        if g["name"] is None:
+            area = QRectF(QPointF(sx, sy), QPointF(x, y)).normalized()
+            selected = {item.id for item in self.editor.project.widgets
+                        if area.intersects(QRectF(item.x, item.y, item.width, item.height))}
+            self.editor.set_selection(g["base_selection"] | selected)
+            self.background.delete("rubber")
+            self.background.create_rectangle(self.root.px(sx), self.root.px(sy), self.root.px(x), self.root.px(y),
+                                              outline=self.root.colors.accent, dash=(4, 3), tags="rubber")
+        elif g["resize"] and g["name"] in g["originals"]:
+            model = next(item for item in self.editor.project.widgets if item.id == g["name"])
+            original = g["originals"][model.id]
+            model.width = max(16, min(self.editor.project.width-model.x, self.editor.snap(original["width"]+x-sx)))
+            model.height = max(2, min(self.editor.project.height-model.y, self.editor.snap(original["height"]+y-sy)))
+            self.handles[model.id].update()
+            self.editor.update_geometry_fields()
+        else:
+            self.editor.move_selection(self.editor.snap(x-sx), self.editor.snap(y-sy), g["originals"])
+        return "break"
+
+    def _release(self, event):
+        if self.testing:
+            return
+        if self._gesture:
+            before = self._gesture["before"]
+            self._gesture = None
+            self.background.delete("rubber")
+            self.editor._commit(before, rebuild_scene=False)
+        return "break"
+
+    def _hover(self, event):
+        return None if self.testing else "break"
+
+    def _context_menu(self, event):
+        if self.testing:
+            return
+        name = self._targets.get(str(event.widget))
+        if name not in self.editor.selected_ids:
+            self.editor.select(name)
+        x, y = self._point(event)
+        position = self.host.mapToGlobal(QPoint(round(x*self.zoom), round(y*self.zoom)))
+        self._defer(lambda: self.editor.context_menu(position))
+        return "break"
+
+    def _defer(self, callback):
+        QTimer.singleShot(0, callback)
+
+    def _key(self, event):
+        key = event.keysym
+        ctrl = bool(event.state & 0x0004)
+        if key in ("F6", "F5"):
+            self._defer(self.editor.test_action.trigger if key == "F6" else self.editor.preview)
+            return "break"
+        if self.testing:
+            return
+        moves = {"Left": (-1, 0), "Right": (1, 0), "Up": (0, -1), "Down": (0, 1)}
+        callbacks = {"Delete": self.editor.delete_selected, "Escape": lambda: self.editor.select(None)}
+        if ctrl:
+            callbacks.update({"a": self.editor.select_all, "c": self.editor.copy_widgets, "x": self.editor.cut_widgets,
+                              "v": self.editor.paste_widgets, "d": self.editor.duplicate, "z": self.editor.undo,
+                              "y": self.editor.redo, "s": self.editor.save_project, "o": self.editor.open_project,
+                              "n": self.editor.new_project, "e": self.editor.export_python})
+            if event.state & 0x0001:
+                callbacks.update(z=self.editor.redo, s=self.editor.save_as)
+        if key in moves:
+            self._defer(lambda: self.editor.nudge(*moves[key]))
+        elif key.lower() in callbacks or key in callbacks:
+            self._defer(callbacks.get(key, callbacks.get(key.lower())))
+        return "break"
+
+    def _wheel(self, event):
+        if event.state & 0x0004:
+            self._defer(lambda: self.zoom_to(self.zoom*(1.15 if event.delta > 0 else 1/1.15)))
+        elif not self.testing:
+            self.verticalScrollBar().setValue(self.verticalScrollBar().value()-event.delta//3)
+        else:
+            return
+        return "break"
 
     def zoom_to(self, factor):
         self.zoom = max(0.25, min(3.0, factor))
-        self.resetTransform()
-        self.scale(self.zoom, self.zoom)
+        self.render(self.editor.project)
+        self.editor.views = self.handles
         self.editor.statusBar().showMessage(f"Масштаб: {round(self.zoom*100)}%")
 
     def fit_artboard(self):
-        self.fitInView(QRectF(-16, -16, self.editor.project.width+32, self.editor.project.height+32), Qt.AspectRatioMode.KeepAspectRatio)
-        self.zoom = self.transform().m11()
+        self.zoom_to(min((self.viewport().width()-16)/self.editor.project.width,
+                         (self.viewport().height()-16)/self.editor.project.height))
 
-    def wheelEvent(self, event):
-        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
-            self.zoom_to(self.zoom * (1.15 if event.angleDelta().y() > 0 else 1/1.15))
-            event.accept()
-        else:
-            super().wheelEvent(event)
+    def setBackgroundBrush(self, color):
+        self.viewport().setStyleSheet(f"background: {color.name()};")
+
+    def update(self, *args):
+        super().update(*args)
+        self.draw_grid()
+        self.refresh_selection()
+
+    def add_drop(self, kind, position):
+        if not self.testing and kind in SPECS and QRectF(0, 0, self.editor.project.width, self.editor.project.height).contains(position):
+            self.editor.add_widget(kind, self.editor.snap(position.x()), self.editor.snap(position.y()))
+            return True
+        return False
 
     def dragEnterEvent(self, event):
-        if event.mimeData().hasFormat(MIME_WIDGET):
+        if not self.testing and event.mimeData().hasFormat(MIME_WIDGET):
             event.acceptProposedAction()
         else:
             event.ignore()
@@ -286,33 +356,52 @@ class DesignView(QGraphicsView):
     def dragMoveEvent(self, event):
         self.dragEnterEvent(event)
 
-    def add_drop(self, kind, position):
-        if kind in SPECS and QRectF(0, 0, self.editor.project.width, self.editor.project.height).contains(position):
-            self.editor.add_widget(kind, self.editor.snap(position.x()), self.editor.snap(position.y()))
-            return True
-        return False
-
     def dropEvent(self, event):
-        if not event.mimeData().hasFormat(MIME_WIDGET):
-            event.ignore()
-            return
+        point = self.host.mapFrom(self.viewport(), event.position().toPoint())
+        self._drop(event, QPointF(point.x()/self.zoom, point.y()/self.zoom))
+
+    def _drop(self, event, point):
         try:
             kind = bytes(event.mimeData().data(MIME_WIDGET)).decode("utf-8")
         except UnicodeError:
             event.ignore()
             return
-        if self.add_drop(kind, self.mapToScene(event.position().toPoint())):
+        if self.add_drop(kind, point):
             event.acceptProposedAction()
         else:
             event.ignore()
 
+    def eventFilter(self, obj, event):
+        if obj is self.host:
+            if event.type() in (QEvent.Type.DragEnter, QEvent.Type.DragMove):
+                self.dragEnterEvent(event)
+                return True
+            if event.type() == QEvent.Type.Drop:
+                self._drop(event, QPointF(event.position().x()/self.zoom, event.position().y()/self.zoom))
+                return True
+        return super().eventFilter(obj, event)
+
+    def wheelEvent(self, event):
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            self.zoom_to(self.zoom*(1.15 if event.angleDelta().y() > 0 else 1/1.15))
+            event.accept()
+        else:
+            super().wheelEvent(event)
+
     def keyPressEvent(self, event):
         moves = {Qt.Key.Key_Left: (-1, 0), Qt.Key.Key_Right: (1, 0),
                  Qt.Key.Key_Up: (0, -1), Qt.Key.Key_Down: (0, 1)}
-        if event.key() in moves and self.editor.selected:
+        if event.key() in moves and not self.testing:
             self.editor.nudge(*moves[event.key()])
             event.accept()
         elif event.key() == Qt.Key.Key_Escape:
             self.editor.select(None)
         else:
             super().keyPressEvent(event)
+
+    def shutdown(self):
+        self._closed = True
+        self.timer.stop()
+        if self.root is not None:
+            self.root.destroy()
+            self.root = None

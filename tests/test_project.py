@@ -40,7 +40,7 @@ class ProjectTests(unittest.TestCase):
         self.assertEqual(canonical.colors["accent"], "#0c2238")
         self.assertEqual(canonical.widgets[0].props["colors"]["text"], "#d2dce6")
         source = generate_python(canonical)
-        self.assertIn("app.widgets[", source)
+        self.assertIn("root = ui.Tk(", source)
         self.assertIn("#0c2238", source)
 
     def test_invalid_colors_and_spinbox_ranges_rejected(self):
@@ -138,6 +138,16 @@ class ProjectTests(unittest.TestCase):
         item.kind = "NotAWidget"
         with self.assertRaises(ProjectError):
             generate_python(project)
+
+    def test_simple_export_handles_window_name_collisions(self):
+        project = Project()
+        for name in ("root", "ui", "root_1"):
+            project.add("Button").id = name
+        tree = ast.parse(generate_python(project))
+        assigned = [node.targets[0].id for node in tree.body if isinstance(node, ast.Assign)]
+        self.assertEqual(len(set(assigned)), 4)
+        self.assertNotIn("def build_app", generate_python(project))
+        self.assertIn("def build_app", generate_python(project, style="function"))
 
 
 if __name__ == "__main__":

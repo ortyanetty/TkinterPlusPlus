@@ -7,7 +7,7 @@ def main():
     # Build from the generated source to exercise the same export path as the editor.
     namespace = {"__name__": "tkinterplus_demo"}
     exec(compile(generate_python(demo_project()), "demo_generated.py", "exec"), namespace)
-    namespace["build_app"]().mainloop()
+    namespace["root"].mainloop()
 
 
 if __name__ == "__main__":

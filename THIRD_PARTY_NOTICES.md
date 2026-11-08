@@ -1,15 +1,16 @@
 # Third-party components in the Windows executable
 
-Tkinter++ 0.3.0 — Copyright (C) 2026 ortyanetty.
+Tkinter++ 0.4.0 — Copyright (C) 2026 ortyanetty.
 The application source is licensed under **GPL-3.0-only**; see `LICENSE`.
 It is provided without warranty. The source and build instructions are available
-at https://github.com/ortyanetty/TkinterPlusPlus/releases/tag/v0.3.0 .
+at https://github.com/ortyanetty/TkinterPlusPlus/releases/tag/v0.4.0 .
 
-The release includes Python, Qt, Tcl/Tk and the following dependencies. Their
+The release includes Python, Qt, Tcl/Tk and the following dependencies. The optional
+Windows installer also includes the unmodified Inno Setup runtime. Their
 copyrights and licenses remain with their respective authors. The project
 license does not replace these component licenses.
 
-The release asset `TkinterPlusPlus-0.3.0-dependency-sources.zip` provides the
+The release asset `TkinterPlusPlus-0.4.0-dependency-sources.zip` provides the
 unmodified source distributions of PyQt6, SIP and PyInstaller. It is available
 next to the executable without charge. The complete corresponding sources of
 Qt, CPython, Tcl and Tk are available without charge at the version-specific
@@ -19,6 +20,7 @@ and build scripts needed to rebuild this executable.
 
 | Component | Version | License / copyright | Corresponding source |
 | --- | --- | --- | --- |
+| Inno Setup (installer only) | 7.1.1 x64 | Inno Setup License; Jordan Russell and Martijn Laan; see licenses/INNO_SETUP_LICENSE.txt | https://github.com/jrsoftware/issrc/tree/is-7_1_1 |
 | CPython | 3.14.8 | PSF License and included third-party notices; Python Software Foundation and contributors | https://www.python.org/ftp/python/3.14.8/Python-3.14.8.tar.xz |
 | PyQt6 | 6.12.0 | GPLv3; Riverbank Computing Limited | https://pypi.org/project/PyQt6/6.12.0/#files |
 | PyQt6-sip | 13.13.0 | SIP license; Riverbank Computing Limited | https://pypi.org/project/PyQt6-sip/13.13.0/#files |

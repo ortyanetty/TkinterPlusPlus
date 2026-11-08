@@ -11,7 +11,6 @@ if HAS_QT:
     from PyQt6.QtTest import QSignalSpy, QTest
     from PyQt6.QtWidgets import QApplication, QMainWindow, QMessageBox
     from tkinterplus.builder import Builder
-    from tkinterplus.designer import Artboard
 
 from tkinterplus.codegen import generate_python
 from tkinterplus.project import Project, SPECS, demo_project
@@ -30,6 +29,7 @@ class BuilderTests(unittest.TestCase):
         self.app = Builder()
         self.app.show()
         self.qt.processEvents()
+        self.app.view.pump()
 
     def tearDown(self):
         self.app.saved = self.app.project.dumps()
@@ -41,12 +41,21 @@ class BuilderTests(unittest.TestCase):
         self.app.view.setFocus()
         self.qt.processEvents()
 
+    def native_event(self, widget, sequence, x, y, state=0):
+        view = self.app.view
+        view.pump()
+        widget.event_generate(sequence, x=round(x*view.density), y=round(y*view.density), state=state)
+        view.pump()
+        self.qt.processEvents()
+
     def test_editor_is_qt_and_empty_canvas_has_no_banners(self):
         import tkinter
         self.assertIsInstance(self.app, QMainWindow)
-        self.assertIsNone(tkinter._default_root)
-        self.assertEqual(len(self.app.scene.items()), 1)
-        self.assertIsInstance(self.app.scene.items()[0], Artboard)
+        view = self.app.view
+        self.assertIsInstance(view.root, tkinter.Tk)
+        self.assertEqual(view.handles, {})
+        self.assertEqual(view.api.GetParent(view.native_handle), int(view.host.winId()))
+        self.assertTrue(view.root.winfo_viewable())
         self.assertEqual(self.app.tabs.tabText(0), "Конструктор")
         self.assertEqual(self.app.tabs.tabText(1), "Код")
         self.assertFalse(self.app.output_dock.isHidden())
@@ -66,13 +75,72 @@ class BuilderTests(unittest.TestCase):
         self.assertEqual(len(app.project.widgets), 1)
 
     def test_all_widget_types_paint_and_export(self):
+        from tkinterplus import widgets
         app = self.app
         for kind in SPECS:
             app.add_widget(kind)
         self.qt.processEvents()
         self.assertFalse(app.grab().isNull())
         self.assertEqual(len(app.views), len(SPECS))
+        for model in app.project.widgets:
+            actual = app.views[model.id].widget
+            self.assertIsInstance(actual, getattr(widgets, model.kind))
+            self.assertEqual((actual.winfo_width(), actual.winfo_height()), (model.width, model.height))
         compile(generate_python(app.project), "export.py", "exec")
+
+    def test_real_widgets_test_mode_and_design_mode_do_not_change_saved_values(self):
+        import tkinter as tk
+        from tkinterplus import widgets
+        app = self.app
+        for kind in ("Entry", "Slider", "CheckBox", "ComboBox", "SpinBox", "Button"):
+            app.add_widget(kind)
+        before, history = app.project.to_dict(), len(app.history)
+        self.assertIsInstance(app.views["slider_1"].widget, widgets.Slider)
+        app.test_action.trigger()
+        self.assertTrue(app.view.testing)
+        self.assertFalse(app.view.background.find_withtag("grid"))
+        entry = app.views["entry_1"].widget
+        entry.delete(0, "end")
+        entry.insert(0, "Проверка ввода")
+        self.assertEqual(entry.get(), "Проверка ввода")
+        slider = app.views["slider_1"].widget
+        self.native_event(slider, "<ButtonPress-1>", 120, 18)
+        self.native_event(slider, "<B1-Motion>", 200, 18, 256)
+        self.native_event(slider, "<ButtonRelease-1>", 200, 18)
+        self.assertGreater(slider.get(), 60)
+        checkbox = app.views["checkbox_1"].widget
+        old = checkbox.get()
+        checkbox.invoke()
+        self.assertNotEqual(checkbox.get(), old)
+        calls = []
+        button = app.views["button_1"].widget
+        button.configure(command=lambda: calls.append(True))
+        self.native_event(button, "<ButtonPress-1>", 20, 20)
+        self.native_event(button, "<ButtonRelease-1>", 20, 20)
+        self.assertEqual(calls, [True])
+        self.assertEqual(app.project.to_dict(), before)
+        self.assertEqual(len(app.history), history)
+        app.test_action.trigger()
+        self.assertEqual(app.views["entry_1"].widget.get(), before["widgets"][0]["props"]["value"])
+        button = app.views["button_1"].widget
+        button.configure(command=lambda: calls.append(True))
+        self.native_event(button, "<ButtonPress-1>", 20, 20)
+        self.native_event(button, "<ButtonRelease-1>", 20, 20)
+        self.assertEqual(calls, [True])
+
+    def test_zoom_keeps_real_geometry_and_exported_properties(self):
+        import tkinter as tk
+        app = self.app
+        app.add_widget("Slider", 80, 120)
+        app.selected.props["colors"] = {"thumb": "#e05293", "border": "#193d5a"}
+        before = app.project.to_dict()
+        for zoom in (0.5, 1.0, 1.5):
+            app.view.zoom_to(zoom)
+            widget = app.views["slider_1"].widget
+            self.assertEqual(widget.winfo_width(), app.selected.width)
+            self.assertEqual(tk.Widget.winfo_width(widget), round(app.selected.width*app.view.density))
+            self.assertEqual(widget.colors.thumb, "#e05293")
+            self.assertEqual(app.project.to_dict(), before)
 
     def test_multiple_selection_ctrl_click_drag_and_undo(self):
         app = self.app
@@ -81,15 +149,16 @@ class BuilderTests(unittest.TestCase):
         app.add_widget("Entry", 240, 120)
         second = app.selected_id
         app.select(first)
-        position = app.view.mapFromScene(QPointF(260, 135))
-        QTest.mouseClick(app.view.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.ControlModifier, position)
+        second_widget = app.views[second].widget
+        self.native_event(second_widget, "<ButtonPress-1>", 20, 15, 4)
+        self.native_event(second_widget, "<ButtonRelease-1>", 20, 15, 4)
         self.assertEqual(app.selected_ids, {first, second})
         before = app.project.to_dict()
         history = len(app.history)
-        position = app.view.mapFromScene(QPointF(50, 45))
-        QTest.mousePress(app.view.viewport(), Qt.MouseButton.LeftButton, pos=position)
-        QTest.mouseMove(app.view.viewport(), position+QPoint(40, 32), 10)
-        QTest.mouseRelease(app.view.viewport(), Qt.MouseButton.LeftButton, pos=position+QPoint(40, 32))
+        widget = app.views[first].widget
+        self.native_event(widget, "<ButtonPress-1>", 18, 13)
+        self.native_event(widget, "<B1-Motion>", 58, 45, 256)
+        self.native_event(widget, "<ButtonRelease-1>", 18, 13)
         self.assertEqual([(item.x, item.y) for item in app.project.widgets], [(72, 64), (280, 152)])
         self.assertEqual(len(app.history), history+1)
         app.undo()
@@ -100,11 +169,10 @@ class BuilderTests(unittest.TestCase):
         app.add_widget("Button", 32, 32)
         app.add_widget("Entry", 240, 120)
         app.select(None)
-        start = app.view.mapFromScene(QPointF(12, 12))
-        end = app.view.mapFromScene(QPointF(500, 205))
-        QTest.mousePress(app.view.viewport(), Qt.MouseButton.LeftButton, pos=start)
-        QTest.mouseMove(app.view.viewport(), end, 20)
-        QTest.mouseRelease(app.view.viewport(), Qt.MouseButton.LeftButton, pos=end)
+        widget = app.view.background
+        self.native_event(widget, "<ButtonPress-1>", 12, 12)
+        self.native_event(widget, "<B1-Motion>", 500, 205, 256)
+        self.native_event(widget, "<ButtonRelease-1>", 500, 205)
         self.assertEqual(len(app.selected_ids), 2)
 
     def test_group_clipboard_delete_and_atomic_paste_rejection(self):
@@ -205,10 +273,10 @@ class BuilderTests(unittest.TestCase):
         app.add_widget("Button", 32, 32)
         self.qt.processEvents()
         before = len(app.history)
-        start = app.view.mapFromScene(QPointF(45, 45))
-        QTest.mousePress(app.view.viewport(), Qt.MouseButton.LeftButton, pos=start)
-        QTest.mouseMove(app.view.viewport(), start+QPoint(64, 48), 10)
-        QTest.mouseRelease(app.view.viewport(), Qt.MouseButton.LeftButton, pos=start+QPoint(64, 48))
+        widget = app.views[app.selected_id].widget
+        self.native_event(widget, "<ButtonPress-1>", 13, 13)
+        self.native_event(widget, "<B1-Motion>", 77, 61, 256)
+        self.native_event(widget, "<ButtonRelease-1>", 13, 13)
         self.qt.processEvents()
         self.assertEqual((app.selected.x, app.selected.y), (96, 80))
         self.assertEqual(len(app.history), before+1)
@@ -217,10 +285,10 @@ class BuilderTests(unittest.TestCase):
         app.select(app.project.widgets[0].id)
         node = app.selected
         expected_height = app.snap(node.height+30)
-        start = app.view.mapFromScene(QPointF(node.x+node.width-3, node.y+node.height-3))
-        QTest.mousePress(app.view.viewport(), Qt.MouseButton.LeftButton, pos=start)
-        QTest.mouseMove(app.view.viewport(), start+QPoint(40, 30), 10)
-        QTest.mouseRelease(app.view.viewport(), Qt.MouseButton.LeftButton, pos=start+QPoint(40, 30))
+        handle = app.view._outlines[-1]
+        self.native_event(handle, "<ButtonPress-1>", 4, 4)
+        self.native_event(handle, "<B1-Motion>", 44, 34, 256)
+        self.native_event(handle, "<ButtonRelease-1>", 4, 4)
         self.qt.processEvents()
         self.assertEqual((app.selected.width, app.selected.height), (200, expected_height))
 
@@ -341,6 +409,10 @@ class BuilderTests(unittest.TestCase):
         self.assertEqual(app.code.toPlainText(), generate_python(app.project))
         app.copy_code()
         self.assertEqual(QApplication.clipboard().text(), generate_python(app.project))
+        app.tabs.setCurrentIndex(0)
+        self.qt.processEvents()
+        app.view.pump()
+        self.assertTrue(app.view.root.winfo_viewable())
 
     def test_dock_panels_can_be_restored(self):
         app = self.app

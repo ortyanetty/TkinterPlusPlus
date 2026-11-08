@@ -6,7 +6,7 @@ import json
 import re
 import sys
 
-from PyQt6.QtCore import QDir, QMimeData, QProcess, QProcessEnvironment, QRectF, QSize, QTemporaryFile, Qt, QUrl
+from PyQt6.QtCore import QDir, QMimeData, QProcess, QProcessEnvironment, QSize, QTemporaryFile, Qt, QUrl
 from PyQt6.QtGui import QAction, QActionGroup, QColor, QDesktopServices, QFont, QIcon, QKeySequence, QPainter, QSyntaxHighlighter, QTextCharFormat
 from PyQt6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDockWidget, QDoubleSpinBox, QFileDialog, QFormLayout,
@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 from .codegen import generate_python
-from .designer import Artboard, DesignItem, DesignScene, DesignView, PaletteList
+from .designer import DesignView, PaletteList
 from .project import MAX_WIDGETS, Project, ProjectError, SPECS, WidgetModel, demo_project
 from .qt_theme import COLORS, apply_theme
 from . import __version__
@@ -43,7 +43,7 @@ class PythonHighlighter(QSyntaxHighlighter):
         rules = [
             (r"\b(?:import|from|as|def|return|if|else|True|False|None)\b", "#569cd6"),
             (r"\b\d+(?:\.\d+)?\b", "#b5cea8"),
-            (r"\b(?:App|Button|Label|Entry|Frame|Textbox|CheckBox|Switch|ComboBox|Slider|ProgressBar|Separator)\b", "#4ec9b0"),
+            (r"\b(?:Tk|App|Button|Label|Entry|Frame|Text|Textbox|Checkbutton|CheckBox|Switch|Combobox|ComboBox|Scale|Slider|Progressbar|ProgressBar|Separator|Radiobutton|RadioButton|Spinbox|SpinBox)\b", "#4ec9b0"),
             (r"""'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*" """.strip(), "#ce9178"),
             (r"#.*$", "#6a9955"),
         ]
@@ -132,6 +132,9 @@ class Builder(QMainWindow):
         self.paste_action = self._action("Вставить элементы", self.paste_widgets, "Ctrl+V")
         self.select_all_action = self._action("Выделить всё", self.select_all, "Ctrl+A")
         self.preview_action = self._action("Предпросмотр", self.preview, "F5", sp.SP_MediaPlay)
+        self.test_action = QAction("Проверка", self, checkable=True)
+        self.test_action.setShortcut(QKeySequence("F6"))
+        self.test_action.toggled.connect(lambda enabled: self.view.set_testing(enabled))
         self.snap_action = QAction("Сетка 8 px", self, checkable=True, checked=True)
         self.snap_action.toggled.connect(lambda checked: self.scene.update())
         file_menu = self.menuBar().addMenu("Файл")
@@ -166,6 +169,7 @@ class Builder(QMainWindow):
         project_menu.addAction(self._action("Открыть пример", self.open_demo))
         project_menu.addSeparator()
         project_menu.addAction(self.preview_action)
+        project_menu.addAction(self.test_action)
         help_menu = self.menuBar().addMenu("Справка")
         help_menu.addAction(self._action("Руководство по библиотеке", lambda: QDesktopServices.openUrl(
             QUrl("https://github.com/ortyanetty/TkinterPlusPlus/blob/main/docs/library-guide.md"))))
@@ -204,17 +208,15 @@ class Builder(QMainWindow):
         toolbar.addSeparator()
         toolbar.addActions([self.undo_action, self.redo_action])
         toolbar.addSeparator()
-        toolbar.addActions([self.preview_action, self.export_action])
+        toolbar.addActions([self.test_action, self.preview_action, self.export_action])
         toolbar.addSeparator()
         toolbar.addAction(self.snap_action)
-        self.document_label = QLabel("Без названия.json")
+        self.document_label = QLabel("Без названия.tpp")
         toolbar.addWidget(self.document_label)
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
         self.view = DesignView(self)
-        self.scene = DesignScene(self)
-        self.view.setScene(self.scene)
-        self.scene.selectionChanged.connect(self._scene_selection)
+        self.scene = self.view
         for action in [self.copy_action, self.cut_action, self.paste_action, self.select_all_action]:
             action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
             self.view.addAction(action)
@@ -377,18 +379,8 @@ class Builder(QMainWindow):
         self.selected_ids.intersection_update(item.id for item in self.project.widgets)
         if self.selected_id not in self.selected_ids:
             self.selected_id = next((item.id for item in self.project.widgets if item.id in self.selected_ids), None)
-        self.scene.blockSignals(True)
-        self.scene.clear()
-        self.views.clear()
-        self.scene.setSceneRect(QRectF(-28, -28, self.project.width+56, self.project.height+56))
-        self.scene.addItem(Artboard(self))
-        for index, item in enumerate(self.project.widgets):
-            view = DesignItem(self, item)
-            view.setZValue(index)
-            self.scene.addItem(view)
-            view.setSelected(item.id in self.selected_ids)
-            self.views[item.id] = view
-        self.scene.blockSignals(False)
+        self.view.render(self.project)
+        self.views = self.view.handles
 
     def select(self, item_id, additive=False, toggle=False):
         ids = set(self.selected_ids) if additive else set()
@@ -403,10 +395,7 @@ class Builder(QMainWindow):
         self.selected_ids = set(ids) & {item.id for item in self.project.widgets}
         self.selected_id = active if active in self.selected_ids else next(
             (item.id for item in self.project.widgets if item.id in self.selected_ids), None)
-        self.scene.blockSignals(True)
-        for name, item in self.views.items():
-            item.setSelected(name in self.selected_ids)
-        self.scene.blockSignals(False)
+        self.view.refresh_selection()
         self.layers.blockSignals(True)
         self.layers.clearSelection()
         for name in self.selected_ids:
@@ -421,9 +410,6 @@ class Builder(QMainWindow):
             action.setEnabled(bool(self.selected_ids))
         for action in self.layout_actions:
             action.setEnabled(len(self.selected_ids) >= 2)
-
-    def _scene_selection(self):
-        self.set_selection({item.model.id for item in self.scene.selectedItems() if isinstance(item, DesignItem)}, self.selected_id)
 
     def select_all(self):
         self.set_selection({item.id for item in self.project.widgets})
@@ -803,7 +789,7 @@ class Builder(QMainWindow):
         menu.exec(position)
 
     def _update_title(self):
-        name = self.path.name if self.path else "Без названия.json"
+        name = self.path.name if self.path else "Без названия.tpp"
         self.setWindowTitle(f"{name}{' *' if self.dirty else ''} — Tkinter++")
         self.document_label.setText(f"  {name}")
         self.dimensions_label.setText(f"{self.project.width} × {self.project.height}   |   {len(self.project.widgets)} элементов   |   Tkinter")
@@ -843,7 +829,7 @@ class Builder(QMainWindow):
     def open_project(self):
         if not self._confirm_discard():
             return
-        path, _ = QFileDialog.getOpenFileName(self, "Открыть проект", "", "Проект Tkinter++ (*.json)")
+        path, _ = QFileDialog.getOpenFileName(self, "Открыть проект", "", "Проект Tkinter++ (*.tpp *.json)")
         if not path:
             return
         try:
@@ -858,9 +844,9 @@ class Builder(QMainWindow):
         return self.save_as() if self.path is None else self._save_to(self.path)
 
     def save_as(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Сохранить проект", str(self.path or "project.json"), "Проект Tkinter++ (*.json)")
+        path, _ = QFileDialog.getSaveFileName(self, "Сохранить проект", str(self.path or "project.tpp"), "Проект Tkinter++ (*.tpp)")
         if path and not Path(path).suffix:
-            path += ".json"
+            path += ".tpp"
         return self._save_to(Path(path)) if path else False
 
     def _save_to(self, path):
@@ -956,6 +942,7 @@ class Builder(QMainWindow):
         if not self._confirm_discard():
             event.ignore()
             return
+        self.view.shutdown()
         for process in list(self.previews):
             process.terminate()
             if not process.waitForFinished(1000):

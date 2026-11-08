@@ -14,6 +14,30 @@ WORKSPACE = Path(__file__).resolve().parents[1]
 
 
 class WidgetTests(unittest.TestCase):
+    def test_tkinter_style_api_with_named_colors_and_rgb(self):
+        root = ui.Tk(bg="#162030")
+        try:
+            root.title("Простая программа")
+            root.geometry("400x240")
+            status = ui.Label(root, text="Ожидание", fg="white")
+            status.pack()
+            button = ui.Button(root, text="Нажать", bg="#2563eb", fg="white",
+                               command=lambda: status.configure(text="Готово"))
+            button.pack()
+            root.update()
+            self.assertEqual(button["bg"], "#2563eb")
+            self.assertEqual(button["fg"], "#ffffff")
+            button["bg"] = (12, 34, 56)
+            self.assertEqual(button["bg"], "#0c2238")
+            button.invoke()
+            self.assertEqual(status["text"], "Готово")
+            field = ui.Entry(root, bg="white", fg="black")
+            field.insert(0, "Roman")
+            self.assertEqual(field.get(), "Roman")
+            self.assertEqual(field["bg"], "#ffffff")
+        finally:
+            root.destroy()
+
     def setUp(self):
         self.app = ui.App(width=1000, height=800)
 
@@ -72,7 +96,7 @@ class WidgetTests(unittest.TestCase):
             self.assertEqual(label.cget("foreground"), "#c8d2dc")
             self.assertEqual(frame.cget("background"), "#1e2832")
             self.assertEqual(self.app._theme.style.lookup(entry.cget("style"), "fieldbackground"), "#443322")
-            self.assertEqual(checkbox._kept_indicators[1].get(6, 10), (170, 187, 204))
+        self.assertEqual(checkbox._kept_indicators[1].get(checkbox.px(6), checkbox.px(10)), (170, 187, 204))
         entry.set_colors()
         self.assertEqual(self.app._theme.style.lookup(entry.cget("style"), "fieldbackground"), "#1e2832")
         with self.assertRaises(ValueError):
@@ -96,15 +120,15 @@ class WidgetTests(unittest.TestCase):
         slider = ui.Slider(self.app, value=50)
         slider.place(x=20, y=20, width=240, height=36)
         self.app.update()
-        slider.event_generate("<ButtonPress-1>", x=120, y=18)
-        slider.event_generate("<B1-Motion>", x=180, y=18)
-        slider.event_generate("<ButtonRelease-1>", x=180, y=18)
+        slider.event_generate("<ButtonPress-1>", x=slider.px(120), y=slider.px(18))
+        slider.event_generate("<B1-Motion>", x=slider.px(180), y=slider.px(18))
+        slider.event_generate("<ButtonRelease-1>", x=slider.px(180), y=slider.px(18))
         self.assertGreater(slider.get(), 60)
         project = Project(colors={"accent": (60, 90, 120)})
         item = project.add("Button")
         item.props["colors"] = {"on_accent": "#123456"}
         namespace = {"__name__": "export_test"}
-        exec(generate_python(project), namespace)
+        exec(generate_python(project, style="function"), namespace)
         exported = namespace["build_app"]()
         try:
             self.assertEqual(exported.colors.accent, "#3c5a78")
@@ -135,7 +159,7 @@ class WidgetTests(unittest.TestCase):
             p.add(kind, 20+i*10, 20+i*40)
         scope = {"__name__": "generated_test"}
         exec(compile(generate_python(p), "generated_app.py", "exec"), scope)
-        exported = scope["build_app"]()
+        exported = scope["root"]
         try:
             exported.update()
             self.assertEqual(len(exported.winfo_children()), len(SPECS))
